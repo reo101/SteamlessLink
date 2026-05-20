@@ -66,6 +66,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             "35"
           ];
           buildToolsVersions = [
+            "34.0.0"
             "35.0.0"
           ];
           includeSources = true;

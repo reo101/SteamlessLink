@@ -1,0 +1,358 @@
+package xyz.reo101.steamlesslink.bridge
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
+import android.os.IBinder
+import android.util.Log
+import xyz.reo101.steamlesslink.R
+import xyz.reo101.steamlesslink.ble.BleTritonTransport
+import xyz.reo101.steamlesslink.raw.UhidRawClient
+import xyz.reo101.steamlesslink.triton.TritonReportParser
+import xyz.reo101.steamlesslink.usb.UsbTritonTransport
+import xyz.reo101.steamlesslink.viiper.ViiperDeviceStream
+import xyz.reo101.steamlesslink.viiper.viiperClient
+import java.io.Closeable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+class ControllerBridgeService : Service() {
+    private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "controller-bridge") }
+    private val streamRef = AtomicReference<ViiperDeviceStream?>(null)
+    private val rawClientRef = AtomicReference<UhidRawClient?>(null)
+    private val bridgeGeneration = AtomicLong(0)
+    private var tritonTransport: Closeable? = null
+    private val closeables: MutableList<Closeable> = mutableListOf()
+    private var lastReportStatusAtMs = 0L
+    private var reportCount = 0L
+    private var lastDroppedStatusAtMs = 0L
+
+    override fun onCreate() {
+        super.onCreate()
+        ensureNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val host = intent?.getStringExtra(EXTRA_HOST) ?: DEFAULT_HOST
+        val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+        val transport = intent?.getStringExtra(EXTRA_TRANSPORT) ?: TRANSPORT_BLE
+        val key = intent?.getStringExtra(EXTRA_KEY)
+        val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
+        startForeground(NOTIFICATION_ID, notification("Starting $transport/$mode bridge to $host:$port"))
+        if (host.isBlank()) {
+            status("Bridge host/IP is required")
+            return START_NOT_STICKY
+        }
+        startBridge(host, port, key, transport, mode)
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun startBridge(host: String, port: Int, key: String?, transport: String, mode: String) {
+        stopBridge()
+        val generation = bridgeGeneration.incrementAndGet()
+        status("Starting ${transport.lowercase()} capture")
+        runCatching { startTritonCapture(transport, mode) }
+            .onFailure { error ->
+                status("Capture startup failed: ${error.message ?: error::class.java.simpleName}")
+                Log.e(TAG, "Capture startup failed", error)
+                return
+            }
+
+        worker.execute {
+            runCatching {
+                bindProcessToWifiIfAvailable()
+                if (!isCurrentBridge(generation)) return@runCatching
+                if (!awaitCaptureReady(generation)) return@runCatching
+                if (mode == MODE_UHID_RAW) {
+                    status("Connecting to Steamless UHID raw bridge at $host:$port")
+                    val raw = UhidRawClient(
+                        host = host,
+                        port = port,
+                        onStatus = ::status,
+                        onGetReport = ::handleRawGetReport,
+                        onSetReport = ::handleRawSetReport,
+                        onOutputReport = ::handleRawOutputReport,
+                    )
+                    if (!isCurrentBridge(generation)) {
+                        raw.close()
+                        return@runCatching
+                    }
+                    rawClientRef.set(raw)
+                    synchronized(closeables) { closeables.add(raw) }
+                    status("UHID raw stream open; forwarding Triton reports")
+                    return@runCatching
+                }
+
+                val authText = if (key.isNullOrBlank()) "plaintext" else "authenticated"
+                status("Connecting to VIIPER at $host:$port ($authText)")
+                val viiper = runCatching {
+                    viiperClient(host, port, key).also { it.ping() }
+                }.getOrElse { error ->
+                    if (!key.isNullOrBlank()) {
+                        status("Authenticated VIIPER connect failed; retrying plaintext (${error.message ?: error::class.java.simpleName})")
+                        viiperClient(host, port, null).also { it.ping() }
+                    } else {
+                        throw error
+                    }
+                }
+                if (!isCurrentBridge(generation)) return@runCatching
+                val ping = viiper.ping()
+                status("VIIPER: ${ping.optString("server", "?")} ${ping.optString("version", "")}")
+                val ref = viiper.createXbox360Device()
+                status("Created VIIPER xbox360 device bus=${ref.busId} dev=${ref.devId}")
+                val stream = viiper.openDeviceStream(ref)
+                if (!isCurrentBridge(generation)) {
+                    stream.close()
+                    return@runCatching
+                }
+                streamRef.set(stream)
+                synchronized(closeables) { closeables.add(stream) }
+                status("VIIPER stream open; forwarding reports")
+            }.onFailure { error ->
+                val target = if (mode == MODE_UHID_RAW) "UHID raw" else "VIIPER"
+                status("Capture is running, but $target connect failed: ${error.message ?: error::class.java.simpleName}")
+                Log.e(TAG, "$target startup failed", error)
+            }
+        }
+    }
+
+    private fun startTritonCapture(transport: String, mode: String) {
+        val closeable = when (transport) {
+            TRANSPORT_USB -> UsbTritonTransport(
+                context = this,
+                onReport = ::handleTritonReport,
+                onStatus = ::status,
+            ).also { it.start() }
+            TRANSPORT_BLE -> BleTritonTransport(
+                context = this,
+                onReport = ::handleTritonReport,
+                onStatus = ::status,
+                enableLizardModeRefresh = mode != MODE_UHID_RAW,
+            ).also { it.start() }
+            else -> error("Unknown transport: $transport")
+        }
+        tritonTransport = closeable
+        synchronized(closeables) { closeables.add(closeable) }
+    }
+
+    private fun handleRawGetReport(requestId: Int, reportNumber: Int, reportType: Int): ByteArray? {
+        val ble = tritonTransport as? BleTritonTransport
+        if (ble == null) {
+            status("UHID get-report id=$requestId unsupported for non-BLE transport")
+            return null
+        }
+        val report = ble.readHidFeatureReport(reportNumber)
+        if (report == null) status("BLE feature read failed for UHID get-report id=$requestId rnum=0x%02x".format(reportNumber))
+        return report
+    }
+
+    private fun handleRawOutputReport(reportType: Int, data: ByteArray): Boolean {
+        val ble = tritonTransport as? BleTritonTransport
+        if (ble == null) {
+            status("UHID output-report unsupported for non-BLE transport")
+            return false
+        }
+        val ok = ble.writeHidOutputReport(data)
+        if (!ok) status("BLE output write failed for UHID output-report rtype=$reportType len=${data.size}")
+        return ok
+    }
+
+    private fun handleRawSetReport(requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray): Boolean {
+        val ble = tritonTransport as? BleTritonTransport
+        if (ble == null) {
+            status("UHID set-report id=$requestId unsupported for non-BLE transport")
+            return false
+        }
+        val ok = ble.writeHidFeatureReport(data)
+        if (!ok) {
+            status(
+                "BLE feature write failed for UHID set-report id=$requestId rnum=0x%02x len=${data.size}; acking Steam anyway".format(
+                    reportNumber,
+                ),
+            )
+        }
+        return true
+    }
+
+    private fun handleTritonReport(report: ByteArray, length: Int) {
+        val triton = TritonReportParser.parse(report, length) ?: return
+        reportCount += 1
+        val now = System.currentTimeMillis()
+        if (now - lastReportStatusAtMs >= REPORT_STATUS_INTERVAL_MS) {
+            lastReportStatusAtMs = now
+            status("Triton reports: count=$reportCount id=0x%02x seq=${triton.sequence} buttons=0x%08x len=$length".format(triton.reportId, triton.buttons.toLong()))
+        }
+
+        val rawClient = rawClientRef.get()
+        if (rawClient != null) {
+            runCatching { rawClient.sendInputReport(triton.rawReport, triton.rawReport.size) }
+                .onFailure { error ->
+                    rawClientRef.compareAndSet(rawClient, null)
+                    status("UHID raw stream write failed: ${error.message ?: error::class.java.simpleName}")
+                    Log.e(TAG, "UHID raw stream write failed", error)
+                }
+            return
+        }
+
+        val xbox = TritonToXbox360Mapper.map(triton)
+        val stream = streamRef.get()
+        if (stream == null) {
+            if (now - lastDroppedStatusAtMs >= DROPPED_STATUS_INTERVAL_MS) {
+                lastDroppedStatusAtMs = now
+                status("Receiving Triton reports, but no output stream is open")
+            }
+            return
+        }
+        runCatching { stream.send(xbox) }
+            .onFailure { error ->
+                streamRef.compareAndSet(stream, null)
+                status("VIIPER stream write failed: ${error.message ?: error::class.java.simpleName}")
+                Log.e(TAG, "VIIPER stream write failed", error)
+            }
+    }
+
+    private fun awaitCaptureReady(generation: Long): Boolean {
+        val ble = tritonTransport as? BleTritonTransport ?: return true
+        status("Waiting for BLE notifications before opening output stream")
+        val ready = ble.awaitReady(BLE_READY_TIMEOUT_MS)
+        if (!isCurrentBridge(generation)) return false
+        if (!ready) {
+            status("BLE notifications were not ready; not opening output stream")
+            return false
+        }
+        status("BLE capture ready")
+        return true
+    }
+
+    private fun bindProcessToWifiIfAvailable() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val networks = cm.allNetworks.mapNotNull { network ->
+            cm.getNetworkCapabilities(network)?.let { capabilities -> network to capabilities }
+        }
+        val summary = networks.joinToString { (network, capabilities) ->
+            val transports = buildList {
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) add("wifi")
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) add("cell")
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) add("vpn")
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) add("bt")
+            }.joinToString("+")
+            "$network:$transports"
+        }
+        status("Available networks: $summary")
+        val wifi = networks.firstOrNull { (_, capabilities) ->
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }?.first
+        if (wifi != null) {
+            val ok = cm.bindProcessToNetwork(wifi)
+            status("Bound process networking to Wi-Fi $wifi: $ok")
+        } else {
+            status("No Wi-Fi internet network found; using default network")
+        }
+    }
+
+    private fun isCurrentBridge(generation: Long): Boolean = bridgeGeneration.get() == generation
+
+    private fun stopBridge() {
+        bridgeGeneration.incrementAndGet()
+        streamRef.getAndSet(null)
+        rawClientRef.getAndSet(null)
+        synchronized(closeables) {
+            closeables.asReversed().forEach { closeable -> runCatching { closeable.close() } }
+            closeables.clear()
+        }
+        tritonTransport = null
+        reportCount = 0
+        lastReportStatusAtMs = 0
+        lastDroppedStatusAtMs = 0
+    }
+
+    private fun status(message: String) {
+        Log.i(TAG, message)
+        if (!shouldShowInNotification(message)) return
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, notification(message))
+    }
+
+    private fun shouldShowInNotification(message: String): Boolean {
+        // Keep detailed diagnostics in logcat without turning the foreground
+        // notification into a constantly changing debug console.
+        return !DIAGNOSTIC_NOTIFICATION_PREFIXES.any { prefix -> message.startsWith(prefix) }
+    }
+
+    private fun notification(text: String): Notification {
+        val builder = if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        return builder
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("SteamlessLink")
+            .setContentText(text)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT < 26) return
+        val manager = getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Controller bridge",
+            NotificationManager.IMPORTANCE_MIN,
+        ).apply {
+            setShowBadge(false)
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    override fun onDestroy() {
+        stopBridge()
+        worker.shutdownNow()
+        super.onDestroy()
+    }
+
+    companion object {
+        const val EXTRA_HOST = "xyz.reo101.steamlesslink.extra.HOST"
+        const val EXTRA_PORT = "xyz.reo101.steamlesslink.extra.PORT"
+        const val EXTRA_TRANSPORT = "xyz.reo101.steamlesslink.extra.TRANSPORT"
+        const val EXTRA_KEY = "xyz.reo101.steamlesslink.extra.KEY"
+        const val EXTRA_MODE = "xyz.reo101.steamlesslink.extra.MODE"
+        const val TRANSPORT_BLE = "ble"
+        const val TRANSPORT_USB = "usb"
+        const val MODE_UHID_RAW = "uhid-raw"
+        const val MODE_VIIPER_XBOX360 = "viiper-xbox360"
+        private const val DEFAULT_HOST = ""
+        private const val DEFAULT_PORT = 3244
+        private const val CHANNEL_ID = "controller_bridge_quiet"
+        private const val NOTIFICATION_ID = 1001
+        private const val REPORT_STATUS_INTERVAL_MS = 1000L
+        private const val DROPPED_STATUS_INTERVAL_MS = 5000L
+        private const val BLE_READY_TIMEOUT_MS = 12_000L
+        private val DIAGNOSTIC_NOTIFICATION_PREFIXES = listOf(
+            "Available networks:",
+            "BLE MTU changed",
+            "BLE notifications:",
+            "Bound process networking",
+            "Enabling BLE notifications for",
+            "Ignoring BLE report",
+            "Triton reports:",
+            "UHID get-report",
+            "UHID output report",
+            "UHID set-report",
+            "Valve char",
+        )
+        private const val TAG = "ControllerBridge"
+    }
+}
