@@ -1,0 +1,6 @@
+# Allow a non-root SteamlessLink daemon to create UHID devices.
+KERNEL=="uhid", MODE="0660", GROUP="input"
+
+# UHID-created hidraw devices do not expose USB idVendor/idProduct attrs.
+# Match the parent HID id instead, e.g. 0003:28DE:1303.xxxx.
+SUBSYSTEM=="hidraw", KERNELS=="0003:28DE:*", MODE="0660", GROUP="input", TAG+="uaccess"

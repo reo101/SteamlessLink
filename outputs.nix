@@ -44,6 +44,11 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
     debug = true;
 
+    flake = {
+      nixosModules.steamless-uhid = import ./nix/modules/steamless-uhid.nix;
+      nixosModules.default = import ./nix/modules/steamless-uhid.nix;
+    };
+
     perSystem =
       {
         pkgs,
@@ -83,6 +88,9 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         androidSdk = androidComposition.androidsdk;
       in
       {
+        packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { };
+        packages.default = self'.packages.steamless-uhid-server;
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             androidSdk
@@ -96,6 +104,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             jq
             netcat-gnu
             openssl
+            python3
             usbutils
           ];
 

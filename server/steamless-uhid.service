@@ -1,0 +1,16 @@
+[Unit]
+Description=SteamlessLink raw Triton UHID bridge
+After=network.target systemd-udevd.service
+
+[Service]
+Type=simple
+# Adjust User= to the account that runs Steam, or to another account in the
+# input group that may access /dev/uhid and the created hidraw device.
+User=steam
+SupplementaryGroups=input
+ExecStart=/usr/local/bin/steamless-uhid-server --listen-host 0.0.0.0 --listen-port 3244 --log-level info
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
