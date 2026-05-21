@@ -46,6 +46,33 @@ class TritonReportParserTest {
     }
 
     @Test
+    fun parsesBleStateReportWithExplicitLength() {
+        val report = ByteArray(64) { 0x55 }
+        report[0] = TritonReportParser.REPORT_ID_BLE_STATE.toByte()
+        report[1] = 0x20
+        report.putU32Le(2, SteamControllerButtons.X)
+        report.putI16Le(6, -1)
+        report.putI16Le(8, 0x4000)
+        report.putI16Le(10, Short.MIN_VALUE.toInt())
+        report.putI16Le(12, Short.MAX_VALUE.toInt())
+        report.putI16Le(14, -123)
+        report.putI16Le(16, 456)
+
+        val state = requireNotNull(TritonReportParser.parse(report, length = 46))
+
+        assertEquals(TritonReportParser.REPORT_ID_BLE_STATE, state.reportId)
+        assertEquals(0x20, state.sequence)
+        assertEquals(SteamControllerButtons.X, state.buttons)
+        assertEquals((-1).toShort(), state.leftTrigger)
+        assertEquals(0x4000.toShort(), state.rightTrigger)
+        assertEquals(Short.MIN_VALUE, state.leftStickX)
+        assertEquals(Short.MAX_VALUE, state.leftStickY)
+        assertEquals((-123).toShort(), state.rightStickX)
+        assertEquals(456.toShort(), state.rightStickY)
+        assertEquals(46, state.rawReport.size)
+    }
+
+    @Test
     fun ignoresUnknownOrShortReports() {
         assertNull(TritonReportParser.parse(byteArrayOf(0x01, 0x02)))
         assertNull(TritonReportParser.parse(ByteArray(18) { if (it == 0) 0x43 else 0 }))
