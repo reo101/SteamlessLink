@@ -16,5 +16,16 @@
     };
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     systems.url = "github:nix-systems/default";
+    zig-flake = {
+      url = "github:silversquirl/zig-flake";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    zls = {
+      url = "github:zigtools/zls/0.16.0";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        zig-flake.follows = "zig-flake";
+      };
+    };
   };
 }

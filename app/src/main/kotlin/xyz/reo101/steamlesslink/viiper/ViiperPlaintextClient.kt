@@ -61,14 +61,14 @@ class ViiperPlaintextClient(
         }
     }
 
-    private fun connect() = openViiperSocket(host, port, readTimeoutMs)
+    private fun connect() = openViiperSocket(host, port, connectTimeoutMs, readTimeoutMs)
 }
 
 class ViiperPlaintextDeviceStream(private val socket: Socket) : ViiperDeviceStream {
     @Synchronized
-    override fun send(state: Xbox360State) {
+    override fun sendPacket(packet: ByteArray) {
         val out = socket.getOutputStream()
-        out.write(state.toViiperPacket())
+        out.write(packet)
         out.flush()
     }
 

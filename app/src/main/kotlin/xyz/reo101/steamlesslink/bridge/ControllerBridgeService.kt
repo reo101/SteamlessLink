@@ -12,10 +12,13 @@ import android.os.IBinder
 import android.util.Log
 import xyz.reo101.steamlesslink.R
 import xyz.reo101.steamlesslink.ble.BleTritonTransport
+import xyz.reo101.steamlesslink.protocol.NativeProtocol
 import xyz.reo101.steamlesslink.raw.UhidRawClient
+import xyz.reo101.steamlesslink.triton.TritonRawState
 import xyz.reo101.steamlesslink.triton.TritonReportParser
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
 import xyz.reo101.steamlesslink.viiper.ViiperDeviceStream
+import xyz.reo101.steamlesslink.viiper.Xbox360State
 import xyz.reo101.steamlesslink.viiper.viiperClient
 import java.io.Closeable
 import java.util.concurrent.ExecutorService
@@ -33,6 +36,7 @@ class ControllerBridgeService : Service() {
     private var lastReportStatusAtMs = 0L
     private var reportCount = 0L
     private var lastDroppedStatusAtMs = 0L
+    private var processBoundToNetwork = false
 
     override fun onCreate() {
         super.onCreate()
@@ -48,10 +52,12 @@ class ControllerBridgeService : Service() {
         startForeground(NOTIFICATION_ID, notification("Starting $transport/$mode bridge to $host:$port"))
         if (host.isBlank()) {
             status("Bridge host/IP is required")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
             return START_NOT_STICKY
         }
         startBridge(host, port, key, transport, mode)
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -161,8 +167,8 @@ class ControllerBridgeService : Service() {
             status("UHID output-report unsupported for non-BLE transport")
             return false
         }
-        val ok = ble.writeHidOutputReport(data)
-        if (!ok) status("BLE output write failed for UHID output-report rtype=$reportType len=${data.size}")
+        val ok = ble.enqueueHidOutputReport(data)
+        if (!ok) status("BLE output enqueue failed for UHID output-report rtype=$reportType len=${data.size}")
         return ok
     }
 
@@ -194,16 +200,19 @@ class ControllerBridgeService : Service() {
 
         val rawClient = rawClientRef.get()
         if (rawClient != null) {
-            runCatching { rawClient.sendInputReport(triton.rawReport, triton.rawReport.size) }
-                .onFailure { error ->
+            runCatching {
+                if (!rawClient.sendInputReport(triton.rawReport, triton.rawReport.size)) {
                     rawClientRef.compareAndSet(rawClient, null)
-                    status("UHID raw stream write failed: ${error.message ?: error::class.java.simpleName}")
-                    Log.e(TAG, "UHID raw stream write failed", error)
+                    status("UHID raw stream is closed")
                 }
+            }.onFailure { error ->
+                rawClientRef.compareAndSet(rawClient, null)
+                status("UHID raw stream write failed: ${error.message ?: error::class.java.simpleName}")
+                Log.e(TAG, "UHID raw stream write failed", error)
+            }
             return
         }
 
-        val xbox = TritonToXbox360Mapper.map(triton)
         val stream = streamRef.get()
         if (stream == null) {
             if (now - lastDroppedStatusAtMs >= DROPPED_STATUS_INTERVAL_MS) {
@@ -212,12 +221,27 @@ class ControllerBridgeService : Service() {
             }
             return
         }
-        runCatching { stream.send(xbox) }
+        runCatching { sendViiperReport(stream, report, length, triton) }
             .onFailure { error ->
                 streamRef.compareAndSet(stream, null)
                 status("VIIPER stream write failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "VIIPER stream write failed", error)
             }
+    }
+
+    private fun sendViiperReport(
+        stream: ViiperDeviceStream,
+        report: ByteArray,
+        length: Int,
+        triton: TritonRawState,
+    ) {
+        val nativePacket = ByteArray(Xbox360State.PACKET_SIZE)
+        if (NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
+            stream.sendPacket(nativePacket)
+            return
+        }
+
+        stream.send(TritonToXbox360Mapper.map(triton))
     }
 
     private fun awaitCaptureReady(generation: Long): Boolean {
@@ -254,10 +278,19 @@ class ControllerBridgeService : Service() {
         }?.first
         if (wifi != null) {
             val ok = cm.bindProcessToNetwork(wifi)
+            if (ok) processBoundToNetwork = true
             status("Bound process networking to Wi-Fi $wifi: $ok")
         } else {
             status("No Wi-Fi internet network found; using default network")
         }
+    }
+
+    private fun clearProcessNetworkBinding() {
+        if (!processBoundToNetwork) return
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val ok = cm.bindProcessToNetwork(null)
+        processBoundToNetwork = false
+        status("Cleared process network binding: $ok")
     }
 
     private fun isCurrentBridge(generation: Long): Boolean = bridgeGeneration.get() == generation
@@ -266,6 +299,7 @@ class ControllerBridgeService : Service() {
         bridgeGeneration.incrementAndGet()
         streamRef.getAndSet(null)
         rawClientRef.getAndSet(null)
+        clearProcessNetworkBinding()
         synchronized(closeables) {
             closeables.asReversed().forEach { closeable -> runCatching { closeable.close() } }
             closeables.clear()
@@ -345,6 +379,9 @@ class ControllerBridgeService : Service() {
             "BLE MTU changed",
             "BLE notifications:",
             "Bound process networking",
+            "Cleared process network binding",
+            "Dropped queued BLE output reports",
+            "Dropped queued UHID input reports",
             "Enabling BLE notifications for",
             "Ignoring BLE report",
             "Triton reports:",

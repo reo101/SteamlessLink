@@ -23,6 +23,13 @@ nix develop -c gradle :app:testDebugUnitTest
 nix develop -c gradle :app:installDebug
 ```
 
+The Zig/JNI protocol mapper is experimental and opt-in. The Kotlin mapper is
+used by default; build an APK with the native mapper only when testing it:
+
+```sh
+nix develop -c gradle -Psteamless.buildZig=true :app:testZigProtocol :app:assembleDebug
+```
+
 APK:
 
 ```text
@@ -41,7 +48,7 @@ Default port conventions used by the UI:
 The main UI buttons are:
 
 - `Start Raw BLE` — preferred path
-- `Raw USB` — experimental; avoid if the phone/controller USB setup is unstable
+- `Raw USB` — experimental input-only path; avoid if the phone/controller USB setup is unstable
 - `Xbox BLE` — VIIPER Xbox 360 fallback
 - `Stop`
 

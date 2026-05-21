@@ -66,6 +66,7 @@ class MainActivity : Activity() {
 
         keyInput = EditText(this).apply {
             hint = "VIIPER key (unused for UHID raw)"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             setSingleLine(true)
             setText(prefs.getString(PREF_KEY, ""))
         }
@@ -80,7 +81,7 @@ class MainActivity : Activity() {
             setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_BLE, ControllerBridgeService.MODE_UHID_RAW) }
         })
         buttonRow.addView(Button(this).apply {
-            text = "Raw USB"
+            text = "Raw USB (input only)"
             setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_USB, ControllerBridgeService.MODE_UHID_RAW) }
         })
         buttonRow.addView(Button(this).apply {
@@ -146,6 +147,7 @@ class MainActivity : Activity() {
             appendLine()
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
             appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Xbox fallback points at a VIIPER server.")
+            appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
         }
     }
 

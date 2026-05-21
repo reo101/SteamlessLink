@@ -21,6 +21,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 @SuppressLint("MissingPermission")
@@ -37,11 +38,16 @@ class BleTritonTransport(
     private var reportCharacteristic: BluetoothGattCharacteristic? = null
     private val outputReportCharacteristics = mutableMapOf<Int, BluetoothGattCharacteristic>()
     private val pendingNotificationCharacteristics = ArrayDeque<BluetoothGattCharacteristic>()
+    private val queuedOutputReports = ArrayDeque<ByteArray>()
+    private val outputQueueLock = Object()
+    private val outputExecutor = Executors.newSingleThreadExecutor { Thread(it, "ble-triton-output-writer") }
+    private val outputClosed = AtomicBoolean(false)
     private var scanExecutor: ScheduledExecutorService? = null
     private var lizardExecutor: ScheduledExecutorService? = null
     private var scanning = false
     private var notificationCount = 0L
     private var lizardWriteCount = 0L
+    private var droppedQueuedOutputReports = 0L
     private val reportIoLock = Any()
     private val pendingWrite = AtomicReference<PendingWrite?>(null)
     private val pendingRead = AtomicReference<PendingRead?>(null)
@@ -49,6 +55,11 @@ class BleTritonTransport(
     private val readyLatch = CountDownLatch(1)
     @Volatile private var ready = false
     private var lastNotificationStatusAtMs = 0L
+    private var lastOutputDropStatusAtMs = 0L
+
+    init {
+        outputExecutor.execute(::outputWriteLoop)
+    }
 
     fun start() {
         val device = findBondedSteamController()
@@ -359,6 +370,78 @@ class BleTritonTransport(
         return writeBlePayload(characteristic, hidReportPayloadForBle(hidReport), timeoutMs = 2000)
     }
 
+    fun enqueueHidOutputReport(hidReport: ByteArray): Boolean {
+        if (hidReport.isEmpty() || outputClosed.get()) return false
+        val copy = hidReport.copyOf()
+        val reportId = copy.u8(0)
+        synchronized(outputQueueLock) {
+            if (outputClosed.get()) return false
+            recordDroppedOutputReports(removeQueuedOutputReports(reportId))
+            while (queuedOutputReports.size >= MAX_OUTPUT_REPORT_QUEUE) {
+                queuedOutputReports.removeFirst()
+                recordDroppedOutputReports(1)
+            }
+            queuedOutputReports.addLast(copy)
+            outputQueueLock.notifyAll()
+        }
+        return true
+    }
+
+    private fun removeQueuedOutputReports(reportId: Int): Int {
+        var removed = 0
+        val kept = ArrayDeque<ByteArray>(queuedOutputReports.size)
+        while (queuedOutputReports.isNotEmpty()) {
+            val report = queuedOutputReports.removeFirst()
+            if (report.u8(0) == reportId) {
+                removed += 1
+            } else {
+                kept.addLast(report)
+            }
+        }
+        queuedOutputReports.addAll(kept)
+        return removed
+    }
+
+    private fun recordDroppedOutputReports(count: Int) {
+        if (count <= 0) return
+        droppedQueuedOutputReports += count.toLong()
+        val now = System.currentTimeMillis()
+        if (now - lastOutputDropStatusAtMs >= OUTPUT_DROP_STATUS_INTERVAL_MS) {
+            lastOutputDropStatusAtMs = now
+            onStatus("Dropped queued BLE output reports: count=$droppedQueuedOutputReports")
+        }
+    }
+
+    private fun outputWriteLoop() {
+        while (true) {
+            val report = synchronized(outputQueueLock) {
+                while (queuedOutputReports.isEmpty() && !outputClosed.get()) {
+                    try {
+                        outputQueueLock.wait()
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return
+                    }
+                }
+                if (outputClosed.get()) return
+                queuedOutputReports.removeFirst()
+            }
+
+            runCatching { writeHidOutputReport(report) }
+                .onSuccess { ok ->
+                    if (!ok && !outputClosed.get()) {
+                        onStatus("BLE output write failed len=${report.size} head=${report.hex(8)}")
+                    }
+                }
+                .onFailure { error ->
+                    if (!outputClosed.get()) {
+                        onStatus("BLE output writer stopped: ${error.message ?: error::class.java.simpleName}")
+                    }
+                    return
+                }
+        }
+    }
+
     private fun hidReportPayloadForBle(hidReport: ByteArray): ByteArray {
         // Steam/SDL HID writes include the report id and a trailing USB padding
         // byte. Triton BLE writes carry the report id in the characteristic UUID
@@ -454,6 +537,12 @@ class BleTritonTransport(
     }
 
     override fun close() {
+        outputClosed.set(true)
+        synchronized(outputQueueLock) {
+            queuedOutputReports.clear()
+            outputQueueLock.notifyAll()
+        }
+        outputExecutor.shutdownNow()
         stopScan()
         scanExecutor?.shutdownNow()
         lizardExecutor?.shutdownNow()
@@ -490,6 +579,8 @@ class BleTritonTransport(
         private const val NOTIFICATION_STATUS_INTERVAL_MS = 1000L
         private const val IGNORED_REPORT_STATUS_INTERVAL_MS = 10_000L
         private const val GATT_RETRY_DELAY_MS = 30L
+        private const val MAX_OUTPUT_REPORT_QUEUE = 4
+        private const val OUTPUT_DROP_STATUS_INTERVAL_MS = 1000L
     }
 }
 

@@ -33,7 +33,7 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Test and assemble debug APK
-        run: nix develop --accept-flake-config -c gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+        run: nix develop --accept-flake-config -c gradle --no-daemon -Psteamless.buildZig=true :app:testDebugUnitTest :app:testZigProtocol :app:assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

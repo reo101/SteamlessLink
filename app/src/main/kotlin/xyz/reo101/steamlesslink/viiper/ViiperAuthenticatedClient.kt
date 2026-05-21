@@ -59,7 +59,7 @@ class ViiperAuthenticatedClient(
     }
 
     private fun connectAuthenticated(): EncryptedViiperConnection {
-        val socket = openViiperSocket(host, port, readTimeoutMs)
+        val socket = openViiperSocket(host, port, connectTimeoutMs, readTimeoutMs)
 
         val key = deriveKey(password)
         val clientNonce = ByteArray(NONCE_SIZE).also { secureRandom.nextBytes(it) }
@@ -107,8 +107,8 @@ class ViiperAuthenticatedClient(
 
 private class ViiperAuthenticatedDeviceStream(private val conn: EncryptedViiperConnection) : ViiperDeviceStream {
     @Synchronized
-    override fun send(state: Xbox360State) {
-        conn.writePlain(state.toViiperPacket())
+    override fun sendPacket(packet: ByteArray) {
+        conn.writePlain(packet)
     }
 
     override fun close() {

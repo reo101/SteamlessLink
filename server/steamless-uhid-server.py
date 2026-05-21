@@ -322,6 +322,10 @@ def uhid_reader(dev: UhidSteamController, conn: socket.socket, stop: threading.E
 
 def handle_client(conn: socket.socket, addr: tuple[str, int], identity: UhidIdentity, uhid_path: str) -> None:
     logging.info("client connected remote=%s:%s", *addr)
+    try:
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     replace_active_client(conn)
     stop = threading.Event()
     dev = UhidSteamController(identity, uhid_path)

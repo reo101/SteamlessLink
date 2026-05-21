@@ -8,6 +8,7 @@ import xyz.reo101.steamlesslink.util.u8
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -18,24 +19,77 @@ class UhidRawClient(
     private val onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
     private val onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
     private val onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
+    connectTimeoutMs: Int = 10_000,
 ) : Closeable {
-    private val socket = Socket(host, port).apply {
+    private val socket = Socket().apply {
         tcpNoDelay = true
+        connect(InetSocketAddress(host, port), connectTimeoutMs)
         soTimeout = 0
     }
     private val input = DataInputStream(socket.getInputStream())
     private val output = DataOutputStream(socket.getOutputStream())
     private val closed = AtomicBoolean(false)
+    private val inputQueueLock = Object()
+    private val queuedInputReports = ArrayDeque<ByteArray>()
+    private val writer = Thread(::writeLoop, "steamless-uhid-raw-writer").apply {
+        isDaemon = true
+        start()
+    }
     private val reader = Thread(::readLoop, "steamless-uhid-raw-reader").apply {
         isDaemon = true
         start()
     }
     private var controlRequestCount = 0L
+    private var droppedInputReports = 0L
+    private var lastInputDropStatusAtMs = 0L
 
-    fun sendInputReport(report: ByteArray, length: Int = report.size) {
-        if (closed.get()) return
+    fun sendInputReport(report: ByteArray, length: Int = report.size): Boolean {
+        if (closed.get()) return false
         val safeLength = length.coerceIn(0, report.size).coerceAtMost(65535)
-        sendFrame(FRAME_INPUT, report.copyOf(safeLength))
+        val payload = report.copyOf(safeLength)
+        synchronized(inputQueueLock) {
+            if (closed.get()) return false
+            while (queuedInputReports.size >= MAX_INPUT_REPORT_QUEUE) {
+                queuedInputReports.removeFirst()
+                recordDroppedInputReports(1)
+            }
+            queuedInputReports.addLast(payload)
+            inputQueueLock.notifyAll()
+        }
+        return true
+    }
+
+    private fun writeLoop() {
+        while (true) {
+            val payload = synchronized(inputQueueLock) {
+                while (queuedInputReports.isEmpty() && !closed.get()) {
+                    try {
+                        inputQueueLock.wait()
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return
+                    }
+                }
+                if (closed.get()) return
+                queuedInputReports.removeFirst()
+            }
+
+            runCatching { sendFrame(FRAME_INPUT, payload) }
+                .onFailure { error ->
+                    if (!closed.get()) onStatus("UHID raw writer stopped: ${error.message ?: error::class.java.simpleName}")
+                    close()
+                    return
+                }
+        }
+    }
+
+    private fun recordDroppedInputReports(count: Int) {
+        droppedInputReports += count.toLong()
+        val now = System.currentTimeMillis()
+        if (now - lastInputDropStatusAtMs >= INPUT_DROP_STATUS_INTERVAL_MS) {
+            lastInputDropStatusAtMs = now
+            onStatus("Dropped queued UHID input reports: count=$droppedInputReports")
+        }
     }
 
     private fun readLoop() {
@@ -112,7 +166,12 @@ class UhidRawClient(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        synchronized(inputQueueLock) {
+            queuedInputReports.clear()
+            inputQueueLock.notifyAll()
+        }
         runCatching { socket.close() }
+        writer.interrupt()
     }
 
     companion object {
@@ -122,5 +181,7 @@ class UhidRawClient(
         private const val FRAME_OUTPUT = 0x81
         private const val FRAME_GET_REPORT = 0x82
         private const val FRAME_SET_REPORT = 0x83
+        private const val MAX_INPUT_REPORT_QUEUE = 8
+        private const val INPUT_DROP_STATUS_INTERVAL_MS = 1000L
     }
 }

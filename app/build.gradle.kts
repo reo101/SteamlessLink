@@ -3,6 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val zigJniLibsDir = layout.buildDirectory.dir("generated/zig/jniLibs")
+val packageZigNative = providers.gradleProperty("steamless.buildZig")
+    .map { it.toBoolean() }
+    .orElse(false)
+val zigSources = fileTree(rootProject.file("native/src")) {
+    include("**/*.zig")
+}
+val zigAndroidTargets = listOf(
+    "arm64-v8a" to "aarch64-linux-android",
+    "x86_64" to "x86_64-linux-android",
+)
+
 android {
     namespace = "xyz.reo101.steamlesslink"
     compileSdk = 35
@@ -35,6 +47,63 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    if (packageZigNative.get()) {
+        sourceSets["main"].jniLibs.srcDir(zigJniLibsDir)
+    }
+
+    packaging {
+        jniLibs.keepDebugSymbols += "**/libsteamless_protocol.so"
+    }
+}
+
+val zigNativeTasks = zigAndroidTargets.map { (abi, target) ->
+    val taskName = "buildZig" + abi
+        .split('-', '_')
+        .joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) }
+    val outputFile = zigJniLibsDir.map { it.file("$abi/libsteamless_protocol.so") }
+
+    tasks.register<Exec>(taskName) {
+        inputs.files(zigSources)
+        inputs.property("zigTarget", target)
+        inputs.property("zigOptimize", "ReleaseSafe")
+        inputs.property("zigStrip", true)
+        outputs.file(outputFile)
+
+        doFirst {
+            outputFile.get().asFile.parentFile.mkdirs()
+        }
+
+        commandLine(
+            "zig",
+            "build-lib",
+            "-dynamic",
+            "-target",
+            target,
+            "-O",
+            "ReleaseSafe",
+            "-fstrip",
+            "-femit-bin=${outputFile.get().asFile.absolutePath}",
+            rootProject.file("native/src/jni.zig").absolutePath,
+        )
+    }
+}
+
+val buildZigNative = tasks.register("buildZigNative") {
+    dependsOn(zigNativeTasks)
+}
+
+tasks.register<Exec>("testZigProtocol") {
+    inputs.files(zigSources)
+    commandLine("zig", "test", rootProject.file("native/src/protocol.zig").absolutePath)
+}
+
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
+    if (packageZigNative.get()) dependsOn(buildZigNative)
+}
+
+tasks.named("check") {
+    if (packageZigNative.get()) dependsOn("testZigProtocol")
 }
 
 dependencies {

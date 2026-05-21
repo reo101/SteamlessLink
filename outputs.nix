@@ -39,6 +39,17 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           url = "github:hercules-ci/flake-parts";
           inputs.nixpkgs-lib.follows = "nixpkgs";
         };
+
+        zig-flake = {
+          url = "github:silversquirl/zig-flake";
+          inputs.nixpkgs.follows = "nixpkgs";
+        };
+
+        zls = {
+          url = "github:zigtools/zls/0.16.0";
+          inputs.nixpkgs.follows = "nixpkgs";
+          inputs.zig-flake.follows = "zig-flake";
+        };
       };
     };
 
@@ -86,6 +97,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
 
         androidSdk = androidComposition.androidsdk;
+        zig = inputs'.zig-flake.packages.zig_0_16_0;
       in
       {
         packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { };
@@ -97,6 +109,8 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             android-tools
             gradle
             jdk17
+            zig
+            inputs'.zls.packages.default
             kotlin
             kotlin-language-server
             ktlint
