@@ -1,11 +1,11 @@
 # Steamless UHID server
 
-This directory contains the non-Android half of SteamlessLink: a small Linux daemon that creates a virtual Steam Controller using `/dev/uhid` and proxies Steam's hidraw feature/output traffic back to the Android app.
+This directory contains the non-Android half of SteamlessLink: a small Zig/Linux daemon that creates a virtual Steam Controller using `/dev/uhid` and proxies Steam's hidraw feature/output traffic back to the Android app.
 
 ## Requirements
 
 - Linux with UHID enabled (`uhid` kernel module)
-- Python 3.10+
+- Zig 0.16+ to build from source, or the Nix package from this flake
 - write access to `/dev/uhid` for the daemon user
 - hidraw access for the Steam user
 - a trusted TCP path from the Android app to the daemon
@@ -22,7 +22,10 @@ Useful upstream docs:
 
 ```sh
 sudo modprobe uhid
-sudo install -Dm755 steamless-uhid-server.py /usr/local/bin/steamless-uhid-server
+
+zig build-exe src/main.zig -lc -O ReleaseSafe -femit-bin=zig-out/bin/steamless-uhid-server
+sudo install -Dm755 zig-out/bin/steamless-uhid-server /usr/local/bin/steamless-uhid-server
+
 sudo install -Dm644 60-steamless-uhid.rules /etc/udev/rules.d/60-steamless-uhid.rules
 sudo install -Dm644 steamless-uhid.service /etc/systemd/system/steamless-uhid.service
 
@@ -34,6 +37,16 @@ sudo systemctl enable --now steamless-uhid
 ```
 
 If your distro does not have an `input` group, adjust the udev rule and service `SupplementaryGroups=` accordingly. Running the daemon as the same user that runs Steam is the simplest permission model.
+
+## Nix
+
+Build the daemon with:
+
+```sh
+nix build .#steamless-uhid-server
+```
+
+On NixOS, import `nixosModules.steamless-uhid` from this flake and enable `services.steamless-uhid`.
 
 ## Security
 

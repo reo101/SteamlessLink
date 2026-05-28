@@ -56,7 +56,7 @@ The main UI buttons are:
 
 This repository now ships the UHID bridge under [`server/`](server/):
 
-- [`server/steamless-uhid-server.py`](server/steamless-uhid-server.py): standalone Python daemon
+- [`server/src/main.zig`](server/src/main.zig): standalone Zig UHID daemon
 - [`server/60-steamless-uhid.rules`](server/60-steamless-uhid.rules): udev permissions
 - [`server/steamless-uhid.service`](server/steamless-uhid.service): example systemd service
 - [`nix/modules/steamless-uhid.nix`](nix/modules/steamless-uhid.nix): NixOS module

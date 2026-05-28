@@ -3,6 +3,10 @@ result
 result-*
 /.direnv/
 
+# Zig
+.zig-cache/
+zig-out/
+
 # Gradle / Android
 .gradle/
 build/
