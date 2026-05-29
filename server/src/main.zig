@@ -1,16 +1,5 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("arpa/inet.h");
-    @cInclude("errno.h");
-    @cInclude("fcntl.h");
-    @cInclude("netinet/in.h");
-    @cInclude("netinet/tcp.h");
-    @cInclude("poll.h");
-    @cInclude("signal.h");
-    @cInclude("sys/socket.h");
-    @cInclude("time.h");
-    @cInclude("unistd.h");
-});
+const c = @import("c");
 
 const Allocator = std.mem.Allocator;
 const AtomicBool = std.atomic.Value(bool);
@@ -279,8 +268,7 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
     log(config, .info, "client connected fd={d}", .{conn_fd});
 
     var dev = try UhidDevice.open(config);
-    var destroyed = false;
-    defer if (!destroyed) dev.destroy();
+    defer dev.destroy();
 
     var stop = AtomicBool.init(false);
     var reader_args = UhidReaderArgs{
@@ -290,9 +278,15 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
         .config = config,
     };
     const reader = try std.Thread.spawn(.{}, uhidReaderThread, .{&reader_args});
-    defer reader.join();
 
     var reports: u64 = 0;
+    defer {
+        stop.store(true, .release);
+        _ = c.shutdown(conn_fd, c.SHUT_RDWR);
+        reader.join();
+        log(config, .info, "client disconnected fd={d} reports={d}", .{ conn_fd, reports });
+    }
+
     var last_log_ns: i128 = 0;
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
 
@@ -309,7 +303,7 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
                 if (now - last_log_ns >= std.time.ns_per_s) {
                     last_log_ns = now;
                     var head_buf: [23]u8 = undefined;
-                    const report_id: i32 = if (frame.payload.len > 0) frame.payload[0] else -1;
+                    const report_id: u8 = if (frame.payload.len > 0) frame.payload[0] else 0;
                     log(
                         config,
                         .info,
@@ -334,12 +328,6 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
             else => log(config, .debug, "ignoring client frame type=0x{x:0>2} len={d}", .{ frame.frame_type, frame.payload.len }),
         }
     }
-
-    stop.store(true, .release);
-    _ = c.shutdown(conn_fd, c.SHUT_RDWR);
-    dev.destroy();
-    destroyed = true;
-    log(config, .info, "client disconnected fd={d} reports={d}", .{ conn_fd, reports });
 }
 
 const UhidReaderArgs = struct {

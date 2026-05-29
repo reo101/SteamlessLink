@@ -75,15 +75,16 @@ From a flake-based NixOS config:
     nixosConfigurations.steam-host = nixpkgs.lib.nixosSystem {
       modules = [
         steamlesslink.nixosModules.steamless-uhid
-        {
+        ({ pkgs, ... }: {
           services.steamless-uhid = {
             enable = true;
+            package = steamlesslink.packages.${pkgs.system}.steamless-uhid-server;
             user = "steam";          # the user that runs Steam
             listenHost = "0.0.0.0";  # or keep 127.0.0.1 behind a TCP proxy/tunnel
             listenPort = 3244;
             openFirewall = true;
           };
-        }
+        })
       ];
     };
   };

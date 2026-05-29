@@ -55,10 +55,21 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
     debug = true;
 
-    flake = {
-      nixosModules.steamless-uhid = import ./nix/modules/steamless-uhid.nix;
-      nixosModules.default = import ./nix/modules/steamless-uhid.nix;
-    };
+    flake =
+      let
+        steamlessUhidModule =
+          { pkgs, lib, ... }:
+          {
+            imports = [ ./nix/modules/steamless-uhid.nix ];
+            services.steamless-uhid.package = lib.mkDefault (
+              withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-uhid-server)
+            );
+          };
+      in
+      {
+        nixosModules.steamless-uhid = steamlessUhidModule;
+        nixosModules.default = steamlessUhidModule;
+      };
 
     perSystem =
       {
@@ -98,9 +109,10 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
         androidSdk = androidComposition.androidsdk;
         zig = inputs'.zig-flake.packages.zig_0_16_0;
+        serverZig = pkgs.zig_0_16 or pkgs.zig;
       in
       {
-        packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { };
+        packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
         packages.default = self'.packages.steamless-uhid-server;
 
         checks = lib.optionalAttrs pkgs.stdenv.isLinux {

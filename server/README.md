@@ -23,7 +23,7 @@ Useful upstream docs:
 ```sh
 sudo modprobe uhid
 
-zig build-exe src/main.zig -lc -O ReleaseSafe -femit-bin=zig-out/bin/steamless-uhid-server
+zig build -Doptimize=ReleaseSafe
 sudo install -Dm755 zig-out/bin/steamless-uhid-server /usr/local/bin/steamless-uhid-server
 
 sudo install -Dm644 60-steamless-uhid.rules /etc/udev/rules.d/60-steamless-uhid.rules
@@ -46,7 +46,7 @@ Build the daemon with:
 nix build .#steamless-uhid-server
 ```
 
-On NixOS, import `nixosModules.steamless-uhid` from this flake and enable `services.steamless-uhid`.
+On NixOS, import `nixosModules.steamless-uhid` from this flake and enable `services.steamless-uhid`. The flake module defaults to this flake's Zig 0.16-built package. If you import `nix/modules/steamless-uhid.nix` directly, set `services.steamless-uhid.package` to a package built with Zig 0.16+.
 
 ## Security
 
