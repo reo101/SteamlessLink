@@ -107,13 +107,66 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           ];
         };
 
+        androidEmulatorComposition = androidPkgs.androidenv.composeAndroidPackages {
+          platformVersions = [ "35" ];
+          buildToolsVersions = [
+            "34.0.0"
+            "35.0.0"
+          ];
+          abiVersions = [ "x86_64" ];
+          systemImageTypes = [ "google_apis" ];
+          includeSources = false;
+          includeSystemImages = true;
+          includeEmulator = true;
+          includeNDK = false;
+          includeCmake = false;
+          extraLicenses = [
+            "android-sdk-license"
+            "android-sdk-preview-license"
+            "android-googletv-license"
+            "android-sdk-arm-dbt-license"
+            "google-gdk-license"
+            "intel-android-extra-license"
+            "intel-android-sysimage-license"
+          ];
+        };
+
         androidSdk = androidComposition.androidsdk;
+        androidEmulatorSdk = androidEmulatorComposition.androidsdk;
         zig = inputs'.zig-flake.packages.zig_0_16_0;
         serverZig = pkgs.zig_0_16 or pkgs.zig;
       in
       {
         packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
+        packages.android-emulator-client = pkgs.callPackage ./nix/android-emulator-client.nix {
+          androidSdk = androidEmulatorSdk;
+        };
+        packages.android-emulator-uhid-test = pkgs.callPackage ./nix/android-emulator-uhid-test.nix {
+          androidSdk = androidEmulatorSdk;
+        };
+        packages.android-emulator-uhid-vm-test-driver = pkgs.testers.runNixOSTest (import ./nix/tests/android-emulator-uhid.nix {
+          inherit pkgs lib;
+          steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
+          steamlessUhidPackage = self'.packages.steamless-uhid-server;
+          androidEmulatorClient = self'.packages.android-emulator-client;
+          androidSdk = androidEmulatorSdk;
+        });
+        packages.android-emulator-uhid-vm-test = pkgs.callPackage ./nix/android-emulator-uhid-vm-test.nix {
+          androidSdk = androidEmulatorSdk;
+          testDriver = self'.packages.android-emulator-uhid-vm-test-driver.driver;
+        };
         packages.default = self'.packages.steamless-uhid-server;
+
+        apps.android-emulator-uhid-test = {
+          type = "app";
+          program = lib.getExe self'.packages.android-emulator-uhid-test;
+          meta.description = "Run the SteamlessLink fake-controller UHID test in an Android emulator";
+        };
+        apps.android-emulator-uhid-vm-test = {
+          type = "app";
+          program = lib.getExe self'.packages.android-emulator-uhid-vm-test;
+          meta.description = "Run the Android emulator app against a NixOS UHID VM";
+        };
 
         checks = lib.optionalAttrs pkgs.stdenv.isLinux {
           steamless-uhid-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-uhid.nix {

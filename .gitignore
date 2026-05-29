@@ -2,6 +2,7 @@
 result
 result-*
 /.direnv/
+/.tmp/
 
 # Zig
 .zig-cache/

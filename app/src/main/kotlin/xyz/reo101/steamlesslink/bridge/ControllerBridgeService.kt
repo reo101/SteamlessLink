@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -12,8 +13,10 @@ import android.os.IBinder
 import android.util.Log
 import xyz.reo101.steamlesslink.R
 import xyz.reo101.steamlesslink.ble.BleTritonTransport
+import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
 import xyz.reo101.steamlesslink.protocol.NativeProtocol
 import xyz.reo101.steamlesslink.raw.UhidRawClient
+import xyz.reo101.steamlesslink.triton.FakeTritonTransport
 import xyz.reo101.steamlesslink.triton.TritonRawState
 import xyz.reo101.steamlesslink.triton.TritonReportParser
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
@@ -30,6 +33,7 @@ class ControllerBridgeService : Service() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "controller-bridge") }
     private val streamRef = AtomicReference<ViiperDeviceStream?>(null)
     private val rawClientRef = AtomicReference<UhidRawClient?>(null)
+    private val localUinputRef = AtomicReference<LocalUinputXbox360Output?>(null)
     private val bridgeGeneration = AtomicLong(0)
     private var tritonTransport: Closeable? = null
     private val closeables: MutableList<Closeable> = mutableListOf()
@@ -50,7 +54,7 @@ class ControllerBridgeService : Service() {
         val key = intent?.getStringExtra(EXTRA_KEY)
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
         startForeground(NOTIFICATION_ID, notification("Starting $transport/$mode bridge to $host:$port"))
-        if (host.isBlank()) {
+        if (host.isBlank() && mode != MODE_LOCAL_UINPUT_XBOX360) {
             status("Bridge host/IP is required")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
@@ -75,7 +79,7 @@ class ControllerBridgeService : Service() {
 
         worker.execute {
             runCatching {
-                bindProcessToWifiIfAvailable()
+                if (mode != MODE_LOCAL_UINPUT_XBOX360) bindProcessToWifiIfAvailable()
                 if (!isCurrentBridge(generation)) return@runCatching
                 if (!awaitCaptureReady(generation)) return@runCatching
                 if (mode == MODE_UHID_RAW) {
@@ -95,6 +99,19 @@ class ControllerBridgeService : Service() {
                     rawClientRef.set(raw)
                     synchronized(closeables) { closeables.add(raw) }
                     status("UHID raw stream open; forwarding Triton reports")
+                    return@runCatching
+                }
+
+                if (mode == MODE_LOCAL_UINPUT_XBOX360) {
+                    status("Starting local uinput Xbox 360 output")
+                    val local = LocalUinputXbox360Output.start(this@ControllerBridgeService, ::status)
+                    if (!isCurrentBridge(generation)) {
+                        local.close()
+                        return@runCatching
+                    }
+                    localUinputRef.set(local)
+                    synchronized(closeables) { closeables.add(local) }
+                    status("Local uinput stream open; forwarding mapped Xbox 360 reports")
                     return@runCatching
                 }
 
@@ -124,7 +141,11 @@ class ControllerBridgeService : Service() {
                 synchronized(closeables) { closeables.add(stream) }
                 status("VIIPER stream open; forwarding reports")
             }.onFailure { error ->
-                val target = if (mode == MODE_UHID_RAW) "UHID raw" else "VIIPER"
+                val target = when (mode) {
+                    MODE_UHID_RAW -> "UHID raw"
+                    MODE_LOCAL_UINPUT_XBOX360 -> "local uinput"
+                    else -> "VIIPER"
+                }
                 status("Capture is running, but $target connect failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "$target startup failed", error)
             }
@@ -144,6 +165,13 @@ class ControllerBridgeService : Service() {
                 onStatus = ::status,
                 enableLizardModeRefresh = mode != MODE_UHID_RAW,
             ).also { it.start() }
+            TRANSPORT_FAKE -> {
+                check(isDebuggable()) { "Fake Triton transport is only available in debuggable builds" }
+                FakeTritonTransport(
+                    onReport = ::handleTritonReport,
+                    onStatus = ::status,
+                ).also { it.start() }
+            }
             else -> error("Unknown transport: $transport")
         }
         tritonTransport = closeable
@@ -151,37 +179,46 @@ class ControllerBridgeService : Service() {
     }
 
     private fun handleRawGetReport(requestId: Int, reportNumber: Int, reportType: Int): ByteArray? {
-        val ble = tritonTransport as? BleTritonTransport
-        if (ble == null) {
-            status("UHID get-report id=$requestId unsupported for non-BLE transport")
-            return null
+        val transport = tritonTransport
+        val report = when (transport) {
+            is BleTritonTransport -> transport.readHidFeatureReport(reportNumber)
+            is FakeTritonTransport -> transport.readHidFeatureReport(reportNumber)
+            else -> {
+                status("UHID get-report id=$requestId unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
+                return null
+            }
         }
-        val report = ble.readHidFeatureReport(reportNumber)
-        if (report == null) status("BLE feature read failed for UHID get-report id=$requestId rnum=0x%02x".format(reportNumber))
+        if (report == null) status("HID feature read failed for UHID get-report id=$requestId rnum=0x%02x".format(reportNumber))
         return report
     }
 
     private fun handleRawOutputReport(reportType: Int, data: ByteArray): Boolean {
-        val ble = tritonTransport as? BleTritonTransport
-        if (ble == null) {
-            status("UHID output-report unsupported for non-BLE transport")
-            return false
+        val transport = tritonTransport
+        val ok = when (transport) {
+            is BleTritonTransport -> transport.enqueueHidOutputReport(data)
+            is FakeTritonTransport -> transport.enqueueHidOutputReport(data)
+            else -> {
+                status("UHID output-report unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
+                return false
+            }
         }
-        val ok = ble.enqueueHidOutputReport(data)
-        if (!ok) status("BLE output enqueue failed for UHID output-report rtype=$reportType len=${data.size}")
+        if (!ok) status("HID output enqueue failed for UHID output-report rtype=$reportType len=${data.size}")
         return ok
     }
 
     private fun handleRawSetReport(requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray): Boolean {
-        val ble = tritonTransport as? BleTritonTransport
-        if (ble == null) {
-            status("UHID set-report id=$requestId unsupported for non-BLE transport")
-            return false
+        val transport = tritonTransport
+        val ok = when (transport) {
+            is BleTritonTransport -> transport.writeHidFeatureReport(data)
+            is FakeTritonTransport -> transport.writeHidFeatureReport(data)
+            else -> {
+                status("UHID set-report id=$requestId unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
+                return false
+            }
         }
-        val ok = ble.writeHidFeatureReport(data)
         if (!ok) {
             status(
-                "BLE feature write failed for UHID set-report id=$requestId rnum=0x%02x len=${data.size}; acking Steam anyway".format(
+                "HID feature write failed for UHID set-report id=$requestId rnum=0x%02x len=${data.size}; acking Steam anyway".format(
                     reportNumber,
                 ),
             )
@@ -210,6 +247,17 @@ class ControllerBridgeService : Service() {
                 status("UHID raw stream write failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "UHID raw stream write failed", error)
             }
+            return
+        }
+
+        val localUinput = localUinputRef.get()
+        if (localUinput != null) {
+            runCatching { sendLocalUinputReport(localUinput, report, length, triton) }
+                .onFailure { error ->
+                    localUinputRef.compareAndSet(localUinput, null)
+                    status("Local uinput stream write failed: ${error.message ?: error::class.java.simpleName}")
+                    Log.e(TAG, "Local uinput stream write failed", error)
+                }
             return
         }
 
@@ -242,6 +290,21 @@ class ControllerBridgeService : Service() {
         }
 
         stream.send(TritonToXbox360Mapper.map(triton))
+    }
+
+    private fun sendLocalUinputReport(
+        output: LocalUinputXbox360Output,
+        report: ByteArray,
+        length: Int,
+        triton: TritonRawState,
+    ) {
+        val nativePacket = ByteArray(Xbox360State.PACKET_SIZE)
+        if (NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
+            output.sendPacket(nativePacket)
+            return
+        }
+
+        output.send(TritonToXbox360Mapper.map(triton))
     }
 
     private fun awaitCaptureReady(generation: Long): Boolean {
@@ -295,10 +358,13 @@ class ControllerBridgeService : Service() {
 
     private fun isCurrentBridge(generation: Long): Boolean = bridgeGeneration.get() == generation
 
+    private fun isDebuggable(): Boolean = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
     private fun stopBridge() {
         bridgeGeneration.incrementAndGet()
         streamRef.getAndSet(null)
         rawClientRef.getAndSet(null)
+        localUinputRef.getAndSet(null)
         clearProcessNetworkBinding()
         synchronized(closeables) {
             closeables.asReversed().forEach { closeable -> runCatching { closeable.close() } }
@@ -365,8 +431,10 @@ class ControllerBridgeService : Service() {
         const val EXTRA_MODE = "xyz.reo101.steamlesslink.extra.MODE"
         const val TRANSPORT_BLE = "ble"
         const val TRANSPORT_USB = "usb"
+        const val TRANSPORT_FAKE = "fake"
         const val MODE_UHID_RAW = "uhid-raw"
         const val MODE_VIIPER_XBOX360 = "viiper-xbox360"
+        const val MODE_LOCAL_UINPUT_XBOX360 = "local-uinput-xbox360"
         private const val DEFAULT_HOST = ""
         private const val DEFAULT_PORT = 3244
         private const val CHANNEL_ID = "controller_bridge_quiet"

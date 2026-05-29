@@ -16,6 +16,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import rikka.shizuku.Shizuku
 import xyz.reo101.steamlesslink.bridge.ControllerBridgeService
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
 
@@ -31,6 +32,7 @@ class MainActivity : Activity() {
         maybeRequestRuntimePermissions()
         setContentView(makeContentView())
         refreshControllers()
+        maybeStartBridgeFromIntent(intent)
     }
 
     private fun makeContentView(): View {
@@ -45,7 +47,7 @@ class MainActivity : Activity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "Default: BLE/USB Steam Controller/Triton -> raw UHID bridge. VIIPER xbox360 fallback available."
+            text = "Default: BLE/USB Steam Controller/Triton -> raw UHID bridge. VIIPER xbox360 fallback and local uinput Xbox modes available."
             textSize = 14f
         })
 
@@ -94,6 +96,20 @@ class MainActivity : Activity() {
         })
         root.addView(buttonRow)
 
+        val localRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        localRow.addView(Button(this).apply {
+            text = "Local Xbox BLE"
+            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_BLE, ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) }
+        })
+        localRow.addView(Button(this).apply {
+            text = "Local Xbox USB"
+            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_USB, ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) }
+        })
+        root.addView(localRow)
+
         root.addView(Button(this).apply {
             text = "Refresh controllers"
             setOnClickListener { refreshControllers() }
@@ -108,35 +124,67 @@ class MainActivity : Activity() {
         return root
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeStartBridgeFromIntent(intent)
+    }
+
+    private fun maybeStartBridgeFromIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) != true) return
+        val host = sanitizeHost(intent.getStringExtra(ControllerBridgeService.EXTRA_HOST).orEmpty())
+        val mode = intent.getStringExtra(ControllerBridgeService.EXTRA_MODE) ?: ControllerBridgeService.MODE_UHID_RAW
+        val transport = intent.getStringExtra(ControllerBridgeService.EXTRA_TRANSPORT) ?: ControllerBridgeService.TRANSPORT_BLE
+        val defaultPort = if (mode == ControllerBridgeService.MODE_VIIPER_XBOX360) DEFAULT_VIIPER_PORT else DEFAULT_RAW_UHID_PORT
+        val port = intent.getIntExtra(ControllerBridgeService.EXTRA_PORT, defaultPort)
+        val key = intent.getStringExtra(ControllerBridgeService.EXTRA_KEY).orEmpty()
+        startBridge(host, port, key, transport, mode)
+    }
+
     private fun startBridge(transport: String, mode: String) {
         val host = sanitizeHost(hostInput.text.toString())
-        if (host.isBlank()) {
+        if (host.isBlank() && mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) {
             statusText.text = "Enter the bridge host/IP first.\n\n${statusText.text}"
             return
         }
-        hostInput.setText(host)
         val typedPort = portInput.text.toString().toIntOrNull()
         val port = when {
             mode == ControllerBridgeService.MODE_UHID_RAW && (typedPort == null || typedPort == DEFAULT_VIIPER_PORT) -> DEFAULT_RAW_UHID_PORT
             mode == ControllerBridgeService.MODE_VIIPER_XBOX360 && (typedPort == null || typedPort == DEFAULT_RAW_UHID_PORT) -> DEFAULT_VIIPER_PORT
+            mode == ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 -> 0
             else -> typedPort
         } ?: DEFAULT_RAW_UHID_PORT
-        portInput.setText(port.toString())
-        val key = keyInput.text.toString()
-        prefs.edit().putString(PREF_HOST, host).putInt(PREF_PORT, port).putString(PREF_KEY, key).apply()
+        startBridge(host, port, keyInput.text.toString(), transport, mode)
+    }
 
-        val intent = Intent(this, ControllerBridgeService::class.java)
+    private fun startBridge(host: String, port: Int, key: String, transport: String, mode: String) {
+        if (host.isBlank() && mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) {
+            statusText.text = "Enter the bridge host/IP first.\n\n${statusText.text}"
+            return
+        }
+        if (!maybeRequestShizukuPermission(mode)) return
+        if (host.isNotBlank()) hostInput.setText(host)
+        if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) portInput.setText(port.toString())
+        keyInput.setText(key)
+        prefs.edit().apply {
+            if (host.isNotBlank()) putString(PREF_HOST, host)
+            if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) putInt(PREF_PORT, port)
+            putString(PREF_KEY, key)
+        }.apply()
+
+        val serviceIntent = Intent(this, ControllerBridgeService::class.java)
             .putExtra(ControllerBridgeService.EXTRA_HOST, host)
             .putExtra(ControllerBridgeService.EXTRA_PORT, port)
             .putExtra(ControllerBridgeService.EXTRA_KEY, key)
             .putExtra(ControllerBridgeService.EXTRA_TRANSPORT, transport)
             .putExtra(ControllerBridgeService.EXTRA_MODE, mode)
         if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(intent)
+            startForegroundService(serviceIntent)
         } else {
-            startService(intent)
+            startService(serviceIntent)
         }
-        statusText.text = "Starting $transport/$mode bridge to $host:$port...\n\n${statusText.text}"
+        val target = if (mode == ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) "local uinput" else "$host:$port"
+        statusText.text = "Starting $transport/$mode bridge to $target...\n\n${statusText.text}"
     }
 
     private fun refreshControllers() {
@@ -147,6 +195,7 @@ class MainActivity : Activity() {
             appendLine()
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
             appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Xbox fallback points at a VIIPER server.")
+            appendLine("Local Xbox mode creates a virtual Android gamepad through Shizuku shell or su/root; build the APK with -Psteamless.buildUinputHelper=true.")
             appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
         }
     }
@@ -192,6 +241,25 @@ class MainActivity : Activity() {
         .substringBefore('/')
         .substringBefore(':')
 
+    private fun maybeRequestShizukuPermission(mode: String): Boolean {
+        if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) return true
+        return runCatching {
+            if (!Shizuku.pingBinder()) {
+                statusText.text = "Shizuku is not running; local uinput will fall back to su/root.\n\n${statusText.text}"
+                return@runCatching true
+            }
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST)
+                statusText.text = "Requested Shizuku permission for local uinput mode. Tap Local Xbox again after granting it.\n\n${statusText.text}"
+                return@runCatching false
+            }
+            true
+        }.getOrElse { error ->
+            statusText.text = "Could not request Shizuku permission: ${error.message ?: error::class.java.simpleName}; local uinput will try su/root.\n\n${statusText.text}"
+            true
+        }
+    }
+
     private fun maybeRequestRuntimePermissions() {
         val permissions = buildList {
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -219,10 +287,12 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        const val EXTRA_AUTOSTART = "xyz.reo101.steamlesslink.extra.AUTOSTART"
         private const val PREF_HOST = "host"
         private const val PREF_PORT = "port"
         private const val PREF_KEY = "key"
         private const val DEFAULT_RAW_UHID_PORT = 3244
         private const val DEFAULT_VIIPER_PORT = 3242
+        private const val SHIZUKU_PERMISSION_REQUEST = 200
     }
 }

@@ -4,13 +4,21 @@ plugins {
 }
 
 val zigJniLibsDir = layout.buildDirectory.dir("generated/zig/jniLibs")
+val uinputHelperAssetsDir = layout.buildDirectory.dir("generated/uinput/assets")
 val packageZigNative = providers.gradleProperty("steamless.buildZig")
+    .map { it.toBoolean() }
+    .orElse(false)
+val packageUinputHelper = providers.gradleProperty("steamless.buildUinputHelper")
     .map { it.toBoolean() }
     .orElse(false)
 val zigSources = fileTree(rootProject.file("native/src")) {
     include("**/*.zig")
 }
 val zigAndroidTargets = listOf(
+    "arm64-v8a" to "aarch64-linux-android",
+    "x86_64" to "x86_64-linux-android",
+)
+val uinputHelperTargets = listOf(
     "arm64-v8a" to "aarch64-linux-android",
     "x86_64" to "x86_64-linux-android",
 )
@@ -50,6 +58,9 @@ android {
 
     if (packageZigNative.get()) {
         sourceSets["main"].jniLibs.srcDir(zigJniLibsDir)
+    }
+    if (packageUinputHelper.get()) {
+        sourceSets["main"].assets.srcDir(uinputHelperAssetsDir)
     }
 
     packaging {
@@ -93,6 +104,41 @@ val buildZigNative = tasks.register("buildZigNative") {
     dependsOn(zigNativeTasks)
 }
 
+val uinputHelperTasks = uinputHelperTargets.map { (abi, target) ->
+    val taskName = "buildUinputHelper" + abi
+        .split('-', '_')
+        .joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) }
+    val outputFile = uinputHelperAssetsDir.map { it.file("uinput/$abi/steamless-uinput-gamepad") }
+
+    tasks.register<Exec>(taskName) {
+        inputs.file(rootProject.file("native/src/uinput_gamepad.zig"))
+        inputs.property("zigTarget", target)
+        inputs.property("zigOptimize", "ReleaseSafe")
+        inputs.property("zigStrip", true)
+        outputs.file(outputFile)
+
+        doFirst {
+            outputFile.get().asFile.parentFile.mkdirs()
+        }
+
+        commandLine(
+            "zig",
+            "build-exe",
+            "-target",
+            target,
+            "-O",
+            "ReleaseSafe",
+            "-fstrip",
+            "-femit-bin=${outputFile.get().asFile.absolutePath}",
+            rootProject.file("native/src/uinput_gamepad.zig").absolutePath,
+        )
+    }
+}
+
+val buildUinputHelper = tasks.register("buildUinputHelper") {
+    dependsOn(uinputHelperTasks)
+}
+
 tasks.register<Exec>("testZigProtocol") {
     inputs.files(zigSources)
     commandLine("zig", "test", rootProject.file("native/src/protocol.zig").absolutePath)
@@ -102,10 +148,16 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders"
     if (packageZigNative.get()) dependsOn(buildZigNative)
 }
 
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    if (packageUinputHelper.get()) dependsOn(buildUinputHelper)
+}
+
 tasks.named("check") {
     if (packageZigNative.get()) dependsOn("testZigProtocol")
 }
 
 dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
 }

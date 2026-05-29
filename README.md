@@ -8,13 +8,14 @@ Preferred path:
 Steam Controller BLE -> Android GATT -> raw Triton reports -> TCP -> Steamless UHID bridge -> Linux UHID/hidraw -> Steam
 ```
 
-Fallback path:
+Fallback paths:
 
 ```text
 Steam Controller BLE/USB -> Android -> Triton parser -> VIIPER xbox360 stream
+Steam Controller BLE/USB -> Android -> Triton parser -> local /dev/uinput Xbox gamepad
 ```
 
-The raw UHID path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. The VIIPER path is a known-good Xbox 360 fallback.
+The raw UHID path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. The VIIPER path is a known-good remote Xbox 360 fallback. The local uinput path is for Android games/apps on the phone and requires Shizuku shell access or root.
 
 ## Build / install Android app
 
@@ -30,15 +31,53 @@ used by default; build an APK with the native mapper only when testing it:
 nix develop -c gradle -Psteamless.buildZig=true :app:testZigProtocol :app:assembleDebug
 ```
 
+Local Android uinput mode needs a small privileged helper packaged as an APK
+asset. Build that helper into the debug APK with:
+
+```sh
+nix develop -c gradle -Psteamless.buildUinputHelper=true :app:assembleDebug
+```
+
+The helper is a standalone Zig/Linux executable built for Android targets
+(`aarch64-linux-android`, `x86_64-linux-android`) and launched through Shizuku
+(shell mode) or `su`. It opens `/dev/uinput` and creates an Android-visible Xbox
+360-style evdev gamepad.
+
 APK:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+## Test Android raw mode in an emulator
+
+The emulator cannot expose a real Steam Controller over BLE/USB, so the debug
+APK includes a fake Triton transport that emits numbered `0x45` reports. Run the
+host-side emulator smoke test with:
+
+```sh
+nix run .#android-emulator-uhid-test
+```
+
+That command builds the debug APK, boots a headless Android emulator, starts the
+app in fake/raw-UHID mode through `MainActivity`, and verifies that the app
+connects to a host TCP server and sends raw `0x45` input frames.
+
+To test the same Android fake transport against the repo's NixOS UHID service
+module and real Linux `hidraw`/UHID plumbing, run the optional VM integration
+app:
+
+```sh
+nix run .#android-emulator-uhid-vm-test
+```
+
+Both emulator commands require KVM and intentionally stay out of default flake
+checks/CI.
+
 ## Android app configuration
 
-The app needs a server host/IP and port.
+Remote raw UHID and VIIPER modes need a server host/IP and port. Local uinput
+mode does not use a remote server.
 
 Default port conventions used by the UI:
 
@@ -50,6 +89,7 @@ The main UI buttons are:
 - `Start Raw BLE` — preferred path
 - `Raw USB` — experimental input-only path; avoid if the phone/controller USB setup is unstable
 - `Xbox BLE` — VIIPER Xbox 360 fallback
+- `Local Xbox BLE` / `Local Xbox USB` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
 - `Stop`
 
 ## Server-side bridge
