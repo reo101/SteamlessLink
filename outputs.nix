@@ -117,7 +117,8 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
         checks = lib.optionalAttrs pkgs.stdenv.isLinux {
           steamless-uhid-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-uhid.nix {
-            steamlessUhidModule = ./nix/modules/steamless-uhid.nix;
+            inherit pkgs lib;
+            steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
             steamlessUhidPackage = self'.packages.steamless-uhid-server;
           });
         };
