@@ -138,6 +138,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
       in
       {
         packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
+        packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
         packages.android-emulator-client = pkgs.callPackage ./nix/android-emulator-client.nix {
           androidSdk = androidEmulatorSdk;
         };
@@ -173,6 +174,10 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             inherit pkgs lib;
             steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
             steamlessUhidPackage = self'.packages.steamless-uhid-server;
+          });
+          steamless-uinput-gamepad-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/uinput-gamepad.nix {
+            inherit pkgs lib;
+            uinputGamepadPackage = self'.packages.steamless-uinput-gamepad;
           });
         };
 
