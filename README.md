@@ -84,13 +84,14 @@ Default port conventions used by the UI:
 - Raw UHID bridge: `3244`
 - VIIPER Xbox fallback: `3242`
 
-The main UI buttons are:
+The main UI has a BLE/USB transport toggle plus mode buttons:
 
-- `Start Raw BLE` — preferred path
-- `Raw USB` — experimental input-only path; avoid if the phone/controller USB setup is unstable
-- `Xbox BLE` — VIIPER Xbox 360 fallback
-- `Local Xbox BLE` / `Local Xbox USB` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
+- `Raw` — preferred raw UHID path
+- `Xbox` — VIIPER Xbox 360 fallback
+- `Local Xbox` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
 - `Stop`
+
+USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
 
 ## Server-side bridge
 

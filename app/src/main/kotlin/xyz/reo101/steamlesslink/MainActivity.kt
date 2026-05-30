@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import rikka.shizuku.Shizuku
 import xyz.reo101.steamlesslink.bridge.ControllerBridgeService
@@ -26,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var hostInput: EditText
     private lateinit var portInput: EditText
     private lateinit var keyInput: EditText
+    private lateinit var transportSwitch: Switch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,41 +76,37 @@ class MainActivity : Activity() {
         }
         root.addView(keyInput)
 
+        transportSwitch = Switch(this).apply {
+            text = if (prefs.getBoolean(PREF_TRANSPORT_USB, false)) "Transport: USB" else "Transport: BLE"
+            isChecked = prefs.getBoolean(PREF_TRANSPORT_USB, false)
+            setOnCheckedChangeListener { _, checked ->
+                text = if (checked) "Transport: USB" else "Transport: BLE"
+                prefs.edit().putBoolean(PREF_TRANSPORT_USB, checked).apply()
+            }
+        }
+        root.addView(transportSwitch)
+
         val buttonRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         buttonRow.addView(Button(this).apply {
-            text = "Start Raw BLE"
-            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_BLE, ControllerBridgeService.MODE_UHID_RAW) }
+            text = "Raw"
+            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_UHID_RAW) }
         })
         buttonRow.addView(Button(this).apply {
-            text = "Raw USB (input only)"
-            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_USB, ControllerBridgeService.MODE_UHID_RAW) }
+            text = "Xbox"
+            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_VIIPER_XBOX360) }
         })
         buttonRow.addView(Button(this).apply {
-            text = "Xbox BLE"
-            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_BLE, ControllerBridgeService.MODE_VIIPER_XBOX360) }
+            text = "Local Xbox"
+            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) }
         })
         buttonRow.addView(Button(this).apply {
             text = "Stop"
             setOnClickListener { stopService(Intent(this@MainActivity, ControllerBridgeService::class.java)) }
         })
         root.addView(buttonRow)
-
-        val localRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        localRow.addView(Button(this).apply {
-            text = "Local Xbox BLE"
-            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_BLE, ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) }
-        })
-        localRow.addView(Button(this).apply {
-            text = "Local Xbox USB"
-            setOnClickListener { startBridge(ControllerBridgeService.TRANSPORT_USB, ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) }
-        })
-        root.addView(localRow)
 
         root.addView(Button(this).apply {
             text = "Refresh controllers"
@@ -154,6 +152,7 @@ class MainActivity : Activity() {
             mode == ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 -> 0
             else -> typedPort
         } ?: DEFAULT_RAW_UHID_PORT
+        prefs.edit().putBoolean(PREF_TRANSPORT_USB, transport == ControllerBridgeService.TRANSPORT_USB).apply()
         startBridge(host, port, keyInput.text.toString(), transport, mode)
     }
 
@@ -193,6 +192,7 @@ class MainActivity : Activity() {
             appendLine()
             appendUsbStatus()
             appendLine()
+            appendLine("Use the BLE/USB transport toggle, then choose Raw, Xbox, or Local Xbox mode.")
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
             appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Xbox fallback points at a VIIPER server.")
             appendLine("Local Xbox mode creates a virtual Android gamepad through Shizuku shell or su/root; build the APK with -Psteamless.buildUinputHelper=true.")
@@ -231,6 +231,12 @@ class MainActivity : Activity() {
                 ),
             )
         }
+    }
+
+    private fun selectedTransport(): String = if (transportSwitch.isChecked) {
+        ControllerBridgeService.TRANSPORT_USB
+    } else {
+        ControllerBridgeService.TRANSPORT_BLE
     }
 
     private fun sanitizeHost(raw: String): String = raw
@@ -291,6 +297,7 @@ class MainActivity : Activity() {
         private const val PREF_HOST = "host"
         private const val PREF_PORT = "port"
         private const val PREF_KEY = "key"
+        private const val PREF_TRANSPORT_USB = "transport_usb"
         private const val DEFAULT_RAW_UHID_PORT = 3244
         private const val DEFAULT_VIIPER_PORT = 3242
         private const val SHIZUKU_PERMISSION_REQUEST = 200
