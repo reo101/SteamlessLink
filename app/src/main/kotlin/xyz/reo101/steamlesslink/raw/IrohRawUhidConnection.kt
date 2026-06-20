@@ -16,14 +16,19 @@ fun irohRawUhidConnection(
     context: Context,
     ticket: String,
     connectTimeoutMs: Long = 10_000,
+    onStatus: (String) -> Unit = {},
 ): RawUhidConnection {
     IrohAndroid.installAndroidContext(context.applicationContext)
     val endpoint = runBlocking { Endpoint.bind(EndpointOptions(preset = presetN0(), relayMode = RelayMode.defaultMode())) }
     var closeConnection: (() -> Unit)? = null
     try {
         val addr = EndpointTicket.fromString(ticket.trim()).endpointAddr()
+        onStatus("Iroh ticket relay=${addr.relayUrl()} direct=${addr.directAddresses().joinToString().ifBlank { "none" }}")
         val conn = runBlocking { withTimeout(connectTimeoutMs) { endpoint.connect(addr, ALPN) } }
+        onStatus("Iroh connected to ${conn.remoteId()}")
+        conn.logPaths(onStatus)
         val bi = runBlocking { withTimeout(connectTimeoutMs) { conn.openBi() } }
+        conn.logPaths(onStatus)
         val recv = bi.recv()
         val send = bi.send()
         closeConnection = { conn.close(0, "bye".toByteArray()) }
@@ -61,6 +66,25 @@ fun irohRawUhidConnection(
         runCatching { runBlocking { endpoint.shutdown() } }
         throw error
     }
+}
+
+private fun computer.iroh.Connection.logPaths(onStatus: (String) -> Unit) {
+    val paths = paths()
+    if (paths.isEmpty()) {
+        onStatus("Iroh paths: none yet")
+        return
+    }
+    paths.forEach { path ->
+        onStatus(
+            "Iroh path ${path.kind()}${if (path.isSelected) " selected" else ""} remote=${path.remoteAddr} rtt=${path.rttMs}ms",
+        )
+    }
+}
+
+private fun computer.iroh.PathSnapshot.kind(): String = when {
+    isRelay -> "relay"
+    isIp -> "direct"
+    else -> "unknown"
 }
 
 private val ALPN = "steamlesslink/uhid-raw/0".toByteArray()

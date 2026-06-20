@@ -94,7 +94,7 @@ class ControllerBridgeService : Service() {
                 if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH) {
                     val connection = if (mode == MODE_UHID_RAW_IROH) {
                         status("Connecting to Steamless UHID raw bridge over Iroh")
-                        irohRawUhidConnection(this@ControllerBridgeService, irohTicket)
+                        irohRawUhidConnection(this@ControllerBridgeService, irohTicket, onStatus = ::status)
                     } else {
                         status("Connecting to Steamless UHID raw bridge at $host:$port")
                         null
