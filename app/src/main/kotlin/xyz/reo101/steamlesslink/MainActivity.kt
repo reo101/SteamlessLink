@@ -10,13 +10,18 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import rikka.shizuku.Shizuku
 import xyz.reo101.steamlesslink.bridge.ControllerBridgeService
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
@@ -28,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var portInput: EditText
     private lateinit var irohTicketInput: EditText
     private lateinit var keyInput: EditText
+    private lateinit var modeSpinner: Spinner
     private lateinit var transportSwitch: Switch
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,6 +90,24 @@ class MainActivity : Activity() {
         }
         root.addView(keyInput)
 
+        modeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_item,
+                MODE_LABELS,
+            ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            setSelection(modeIndex(prefs.getString(PREF_MODE, ControllerBridgeService.MODE_UHID_RAW)))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    prefs.edit().putString(PREF_MODE, selectedMode()).apply()
+                    updateInputAvailability()
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        root.addView(modeSpinner)
+
         transportSwitch = Switch(this).apply {
             text = if (prefs.getBoolean(PREF_TRANSPORT_USB, false)) "Transport: USB" else "Transport: BLE"
             isChecked = prefs.getBoolean(PREF_TRANSPORT_USB, false)
@@ -99,20 +123,8 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         buttonRow.addView(Button(this).apply {
-            text = "Raw"
-            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_UHID_RAW) }
-        })
-        buttonRow.addView(Button(this).apply {
-            text = "Raw Iroh"
-            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_UHID_RAW_IROH) }
-        })
-        buttonRow.addView(Button(this).apply {
-            text = "Xbox"
-            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_VIIPER_XBOX360) }
-        })
-        buttonRow.addView(Button(this).apply {
-            text = "Local Xbox"
-            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) }
+            text = "Start"
+            setOnClickListener { startBridge(selectedTransport(), selectedMode()) }
         })
         buttonRow.addView(Button(this).apply {
             text = "Stop"
@@ -131,6 +143,7 @@ class MainActivity : Activity() {
         }
         root.addView(ScrollView(this).apply { addView(statusText) })
 
+        updateInputAvailability()
         return root
     }
 
@@ -144,6 +157,7 @@ class MainActivity : Activity() {
         if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) != true) return
         val host = sanitizeHost(intent.getStringExtra(ControllerBridgeService.EXTRA_HOST).orEmpty())
         val mode = intent.getStringExtra(ControllerBridgeService.EXTRA_MODE) ?: ControllerBridgeService.MODE_UHID_RAW
+        if (::modeSpinner.isInitialized) modeSpinner.setSelection(modeIndex(mode))
         val transport = intent.getStringExtra(ControllerBridgeService.EXTRA_TRANSPORT) ?: ControllerBridgeService.TRANSPORT_BLE
         val defaultPort = if (mode == ControllerBridgeService.MODE_VIIPER_XBOX360) DEFAULT_VIIPER_PORT else DEFAULT_RAW_UHID_PORT
         val port = intent.getIntExtra(ControllerBridgeService.EXTRA_PORT, defaultPort)
@@ -153,6 +167,7 @@ class MainActivity : Activity() {
     }
 
     private fun startBridge(transport: String, mode: String) {
+        prefs.edit().putString(PREF_MODE, mode).apply()
         val host = sanitizeHost(hostInput.text.toString())
         val irohTicket = irohTicketInput.text.toString().trim()
         if (mode == ControllerBridgeService.MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
@@ -193,6 +208,7 @@ class MainActivity : Activity() {
             if (irohTicket.isNotBlank()) putString(PREF_IROH_TICKET, irohTicket)
             if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) putInt(PREF_PORT, port)
             putString(PREF_KEY, key)
+            putString(PREF_MODE, mode)
         }.apply()
 
         val serviceIntent = Intent(this, ControllerBridgeService::class.java)
@@ -221,7 +237,7 @@ class MainActivity : Activity() {
             appendLine()
             appendUsbStatus()
             appendLine()
-            appendLine("Use the BLE/USB transport toggle, then choose Raw, Raw Iroh, Xbox, or Local Xbox mode.")
+            appendLine("Use the connection method dropdown and BLE/USB transport toggle, then tap Start.")
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
             appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Raw Iroh uses an endpoint ticket instead of host:port. Xbox fallback points at a VIIPER server.")
             appendLine("Local Xbox mode creates a virtual Android gamepad through Shizuku shell or su/root; build the APK with -Psteamless.buildUinputHelper=true.")
@@ -267,6 +283,33 @@ class MainActivity : Activity() {
     } else {
         ControllerBridgeService.TRANSPORT_BLE
     }
+
+    private fun selectedMode(): String = MODE_VALUES.getOrElse(modeSpinner.selectedItemPosition) {
+        ControllerBridgeService.MODE_UHID_RAW
+    }
+
+    private fun updateInputAvailability() {
+        val mode = selectedMode()
+        val usesHostPort = mode == ControllerBridgeService.MODE_UHID_RAW || mode == ControllerBridgeService.MODE_VIIPER_XBOX360
+        setInputAvailability(hostInput, usesHostPort, "Bridge host/IP is used by Raw UHID and VIIPER Xbox")
+        setInputAvailability(portInput, usesHostPort, "Bridge port is used by Raw UHID and VIIPER Xbox")
+        setInputAvailability(irohTicketInput, mode == ControllerBridgeService.MODE_UHID_RAW_IROH, "Iroh ticket is used by Raw Iroh")
+        setInputAvailability(keyInput, mode == ControllerBridgeService.MODE_VIIPER_XBOX360, "VIIPER key is used by VIIPER Xbox")
+    }
+
+    private fun setInputAvailability(input: EditText, available: Boolean, message: String) {
+        input.alpha = if (available) 1f else 0.45f
+        input.isFocusable = available
+        input.isFocusableInTouchMode = available
+        input.isCursorVisible = available
+        input.isLongClickable = available
+        input.setOnTouchListener(if (available) null else View.OnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_UP) Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            true
+        })
+    }
+
+    private fun modeIndex(mode: String?): Int = MODE_VALUES.indexOf(mode ?: "").takeIf { it >= 0 } ?: 0
 
     private fun sanitizeHost(raw: String): String = raw
         .trim()
@@ -327,9 +370,17 @@ class MainActivity : Activity() {
         private const val PREF_PORT = "port"
         private const val PREF_IROH_TICKET = "iroh_ticket"
         private const val PREF_KEY = "key"
+        private const val PREF_MODE = "mode"
         private const val PREF_TRANSPORT_USB = "transport_usb"
         private const val DEFAULT_RAW_UHID_PORT = 3244
         private const val DEFAULT_VIIPER_PORT = 3242
         private const val SHIZUKU_PERMISSION_REQUEST = 200
+        private val MODE_LABELS = arrayOf("Raw UHID", "Raw Iroh", "VIIPER Xbox", "Local Xbox")
+        private val MODE_VALUES = arrayOf(
+            ControllerBridgeService.MODE_UHID_RAW,
+            ControllerBridgeService.MODE_UHID_RAW_IROH,
+            ControllerBridgeService.MODE_VIIPER_XBOX360,
+            ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360,
+        )
     }
 }

@@ -92,6 +92,21 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           };
         };
 
+        androidX86_64Pkgs = import inputs.nixpkgs {
+          inherit system;
+          config = {
+            android_sdk.accept_license = true;
+            allowUnfree = true;
+          };
+          crossSystem = {
+            config = "x86_64-unknown-linux-android";
+            rust.rustcTarget = "x86_64-linux-android";
+            androidSdkVersion = "35";
+            androidNdkVersion = "27";
+            useAndroidPrebuilt = true;
+          };
+        };
+
         androidComposition = androidPkgs.androidenv.composeAndroidPackages {
           platformVersions = [
             "35"
@@ -141,12 +156,14 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         serverZig = pkgs.zig_0_16 or pkgs.zig;
         craneLib = inputs.crane.mkLib pkgs;
         androidArm64CraneLib = inputs.crane.mkLib androidPkgs.pkgsCross.aarch64-android-prebuilt;
+        androidX86_64CraneLib = inputs.crane.mkLib androidX86_64Pkgs;
       in
       {
         packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
         packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
         packages.iroh-android-jni = pkgs.callPackage ./nix/iroh-android-jni.nix {
           craneLibArm64 = androidArm64CraneLib;
+          craneLibX86_64 = androidX86_64CraneLib;
         };
         packages.steamless-uhid-iroh-proxy = pkgs.callPackage ./nix/iroh-uhid-proxy.nix {
           inherit craneLib;
@@ -156,6 +173,15 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
         packages.android-emulator-uhid-test = pkgs.callPackage ./nix/android-emulator-uhid-test.nix {
           androidSdk = androidEmulatorSdk;
+          steamlessIrohJni = self'.packages.iroh-android-jni;
+          steamlessUhidIrohProxy = self'.packages.steamless-uhid-iroh-proxy;
+        };
+        packages.android-emulator-iroh-test = pkgs.writeShellApplication {
+          name = "steamless-android-emulator-iroh-test";
+          runtimeInputs = [ self'.packages.android-emulator-uhid-test ];
+          text = ''
+            STEAMLESS_ANDROID_TEST_IROH=1 exec steamless-android-emulator-uhid-test "$@"
+          '';
         };
         packages.android-emulator-uhid-vm-test-driver = pkgs.testers.runNixOSTest (import ./nix/tests/android-emulator-uhid.nix {
           inherit pkgs lib;
@@ -179,6 +205,11 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           type = "app";
           program = lib.getExe self'.packages.android-emulator-uhid-test;
           meta.description = "Run the SteamlessLink fake-controller UHID test in an Android emulator";
+        };
+        apps.android-emulator-iroh-test = {
+          type = "app";
+          program = lib.getExe self'.packages.android-emulator-iroh-test;
+          meta.description = "Run the Android emulator app through Iroh to a fake UHID server";
         };
         apps.android-emulator-uhid-vm-test = {
           type = "app";

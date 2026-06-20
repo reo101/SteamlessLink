@@ -5,6 +5,8 @@
   gradle,
   jdk17,
   python3,
+  steamlessIrohJni,
+  steamlessUhidIrohProxy,
 }:
 
 writeShellApplication {
@@ -23,6 +25,7 @@ writeShellApplication {
     export ANDROID_SDK_ROOT="$ANDROID_HOME"
     export JAVA_HOME=${jdk17.home}
     export GRADLE_OPTS="-Dorg.gradle.project.android.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2 ''${GRADLE_OPTS:-}"
+    export IROH_JNI=${steamlessIrohJni}
 
     avdmanager="$ANDROID_HOME/cmdline-tools/20.0/bin/avdmanager"
     if [ ! -x "$avdmanager" ]; then
@@ -35,6 +38,8 @@ writeShellApplication {
     avd_name="steamlesslink-e2e"
     system_image="system-images;android-35;google_apis;x86_64"
     host_port="''${STEAMLESS_ANDROID_TEST_PORT:-33244}"
+    iroh_port="''${STEAMLESS_ANDROID_IROH_PORT:-34244}"
+    iroh_mode="''${STEAMLESS_ANDROID_TEST_IROH:-0}"
     adb_serial="''${STEAMLESS_ANDROID_TEST_SERIAL:-emulator-5554}"
     tmp_parent="''${STEAMLESS_ANDROID_TEST_TMPDIR:-$project_root/.tmp/android-emulator}"
     mkdir -p "$tmp_parent"
@@ -45,8 +50,10 @@ writeShellApplication {
 
     emulator_pid=""
     server_pid=""
+    proxy_pid=""
     cleanup() {
       set +e
+      if [ -n "$proxy_pid" ]; then kill "$proxy_pid" 2>/dev/null || true; fi
       if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; fi
       "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" emu kill >/dev/null 2>&1 || true
       if [ -n "$emulator_pid" ]; then wait "$emulator_pid" 2>/dev/null || true; fi
@@ -184,14 +191,30 @@ writeShellApplication {
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1 || true
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_SCAN >/dev/null 2>&1 || true
 
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
+    if [ "$iroh_mode" = 1 ]; then
+      STEAMLESS_IROH_BIND_ADDR="0.0.0.0:$iroh_port" \
+        STEAMLESS_IROH_EXTERNAL_ADDR="10.0.2.2:$iroh_port" \
+        ${steamlessUhidIrohProxy}/bin/steamless-uhid-iroh-proxy "127.0.0.1:$host_port" >"$workdir/iroh-ticket" 2>"$workdir/iroh-proxy.log" &
+      proxy_pid=$!
+      for _ in $(seq 1 100); do [ -s "$workdir/iroh-ticket" ] && break; sleep 0.1; done
+      ticket=$(head -n1 "$workdir/iroh-ticket")
+      test -n "$ticket"
+      mode=uhid-raw-iroh
+      ticket_args=(--es xyz.reo101.steamlesslink.extra.IROH_TICKET "$ticket")
+    else
+      "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
+      mode=uhid-raw
+      ticket_args=()
+    fi
+
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell am start \
       -n "$package_name/.MainActivity" \
       --ez xyz.reo101.steamlesslink.extra.AUTOSTART true \
       --es xyz.reo101.steamlesslink.extra.HOST 127.0.0.1 \
       --ei xyz.reo101.steamlesslink.extra.PORT "$host_port" \
       --es xyz.reo101.steamlesslink.extra.TRANSPORT fake \
-      --es xyz.reo101.steamlesslink.extra.MODE uhid-raw >/dev/null
+      --es xyz.reo101.steamlesslink.extra.MODE "$mode" \
+      "''${ticket_args[@]}" >/dev/null
 
     result_deadline=$((SECONDS + 60))
     while [ "$SECONDS" -lt "$result_deadline" ]; do
@@ -202,7 +225,8 @@ writeShellApplication {
       if ! kill -0 "$server_pid" 2>/dev/null; then
         echo "error: fake raw server exited before success" >&2
         cat "$workdir/server.log" >&2 || true
-        "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport AndroidRuntime >&2 || true
+        cat "$workdir/iroh-proxy.log" >&2 2>/dev/null || true
+        "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport AndroidRuntime IrohRawUhid AndroidRuntime >&2 || true
         exit 1
       fi
       sleep 1
@@ -210,7 +234,8 @@ writeShellApplication {
 
     echo "error: timed out waiting for Android app raw reports" >&2
     cat "$workdir/server.log" >&2 || true
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport AndroidRuntime >&2 || true
+    cat "$workdir/iroh-proxy.log" >&2 2>/dev/null || true
+    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport IrohRawUhid AndroidRuntime >&2 || true
     exit 1
   '';
 }

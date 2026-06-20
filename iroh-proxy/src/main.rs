@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use iroh::{Endpoint, endpoint::presets};
+use iroh::{Endpoint, EndpointAddr, TransportAddr, endpoint::presets};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use tokio::{io as tokio_io, io::AsyncReadExt, net::TcpStream};
 
@@ -37,12 +37,21 @@ async fn serve(target: SocketAddr) -> Result<()> {
     if let Some(addr) = &bind_addr {
         builder = builder.bind_addr(addr)?;
     }
+    let external_addr = env::var("STEAMLESS_IROH_EXTERNAL_ADDR").ok();
+    if let Some(addr) = &external_addr {
+        builder = builder.external_addr(addr.parse()?);
+    }
     let endpoint = builder.bind().await?;
     if bind_addr.is_none() {
         let _ = tokio::time::timeout(Duration::from_secs(10), endpoint.online()).await;
     }
 
-    let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
+    let endpoint_addr = if let Some(addr) = external_addr {
+        EndpointAddr::from_parts(endpoint.id(), [TransportAddr::Ip(addr.parse()?)])
+    } else {
+        endpoint.addr()
+    };
+    let ticket = EndpointTicket::new(endpoint_addr).encode_string();
     eprintln!("Forwarding Iroh {ticket} -> {target}");
     println!("{ticket}");
 
