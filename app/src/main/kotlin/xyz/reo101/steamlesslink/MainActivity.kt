@@ -91,6 +91,8 @@ class MainActivity : Activity() {
         root.addView(keyInput)
 
         modeSpinner = Spinner(this).apply {
+            minimumHeight = dp(56)
+            setPadding(paddingLeft, dp(12), paddingRight, dp(12))
             adapter = ArrayAdapter(
                 this@MainActivity,
                 android.R.layout.simple_spinner_item,
@@ -310,6 +312,8 @@ class MainActivity : Activity() {
     }
 
     private fun modeIndex(mode: String?): Int = MODE_VALUES.indexOf(mode ?: "").takeIf { it >= 0 } ?: 0
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun sanitizeHost(raw: String): String = raw
         .trim()

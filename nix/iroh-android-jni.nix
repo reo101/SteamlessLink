@@ -13,7 +13,7 @@ let
     hash = "sha256-AeXnM091a2MWHEJsMYlY/zy8WXKIKWO4uVdAeehWl8k=";
   };
 
-  buildFor = craneLib: abi: pname:
+  buildFor = craneLib: abi: pname: rustTargetEnv:
     let
       commonArgs = {
         inherit pname src;
@@ -21,6 +21,8 @@ let
         strictDeps = true;
         doCheck = false;
         cargoExtraArgs = "--lib";
+      } // {
+        "CARGO_TARGET_${rustTargetEnv}_RUSTFLAGS" = "-C link-arg=-Wl,-z,max-page-size=16384";
       };
       cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
         cargoHash = "sha256-wUkb240T7icWb6X6JOcR5nfLhul+gjs+j4hL4HfSEdU=";
@@ -37,8 +39,8 @@ let
       '';
     });
 
-  arm64 = buildFor craneLibArm64 "arm64-v8a" "iroh-android-jni-arm64-v8a";
-  x86_64 = buildFor craneLibX86_64 "x86_64" "iroh-android-jni-x86_64";
+  arm64 = buildFor craneLibArm64 "arm64-v8a" "iroh-android-jni-arm64-v8a" "AARCH64_LINUX_ANDROID";
+  x86_64 = buildFor craneLibX86_64 "x86_64" "iroh-android-jni-x86_64" "X86_64_LINUX_ANDROID";
 in
 stdenv.mkDerivation {
   pname = "iroh-android-jni";

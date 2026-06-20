@@ -164,7 +164,7 @@ dependencies {
     implementation("computer.iroh:iroh:1.0.0") {
         exclude(group = "net.java.dev.jna", module = "jna")
     }
-    implementation("net.java.dev.jna:jna:5.15.0@aar")
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
