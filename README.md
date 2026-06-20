@@ -84,13 +84,12 @@ Default port conventions used by the UI:
 - Raw UHID bridge: `3244`
 - VIIPER Xbox fallback: `3242`
 
-The main UI has a BLE/USB transport toggle plus mode buttons:
+The main UI has a BLE/USB transport toggle, a connection method dropdown, and Start/Stop buttons:
 
-- `Raw` — preferred raw UHID path over TCP host/IP + port
+- `Raw UHID` — preferred raw UHID path over TCP host/IP + port
 - `Raw Iroh` — raw UHID path over an Iroh endpoint ticket instead of host/IP + port
-- `Xbox` — VIIPER Xbox 360 fallback
+- `VIIPER Xbox` — VIIPER Xbox 360 fallback
 - `Local Xbox` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
-- `Stop`
 
 USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
 
@@ -109,6 +108,24 @@ its printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
 ```sh
 steamless-uhid-server --listen-host 127.0.0.1 --listen-port 3244
 nix run .#steamless-uhid-iroh-proxy -- 127.0.0.1:3244
+```
+
+With the NixOS module, enable both services and read the ticket from the proxy
+journal:
+
+```nix
+services.steamless-uhid = {
+  enable = true;
+  user = "steam";
+  listenHost = "127.0.0.1";
+  listenPort = 3244;
+
+  iroh.enable = true;
+};
+```
+
+```sh
+journalctl -u steamless-uhid-iroh-proxy -b -o cat | grep '^endpoint' | tail -1
 ```
 
 ## Server-side bridge
@@ -139,9 +156,14 @@ From a flake-based NixOS config:
             enable = true;
             package = steamlesslink.packages.${pkgs.system}.steamless-uhid-server;
             user = "steam";          # the user that runs Steam
-            listenHost = "0.0.0.0";  # or keep 127.0.0.1 behind a TCP proxy/tunnel
+            listenHost = "0.0.0.0";  # or use 127.0.0.1 with iroh.enable
             listenPort = 3244;
             openFirewall = true;
+
+            iroh = {
+              enable = true;
+              package = steamlesslink.packages.${pkgs.system}.steamless-uhid-iroh-proxy;
+            };
           };
         })
       ];

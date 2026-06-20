@@ -65,9 +65,14 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           { pkgs, lib, ... }:
           {
             imports = [ ./nix/modules/steamless-uhid.nix ];
-            services.steamless-uhid.package = lib.mkDefault (
-              withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-uhid-server)
-            );
+            services.steamless-uhid = {
+              package = lib.mkDefault (
+                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-uhid-server)
+              );
+              iroh.package = lib.mkDefault (
+                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-uhid-iroh-proxy)
+              );
+            };
           };
       in
       {
