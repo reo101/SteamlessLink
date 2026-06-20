@@ -188,7 +188,7 @@ class ControllerBridgeService : Service() {
                 context = this,
                 onReport = ::handleTritonReport,
                 onStatus = ::status,
-                enableLizardModeRefresh = mode != MODE_UHID_RAW,
+                enableLizardModeRefresh = mode != MODE_UHID_RAW && mode != MODE_UHID_RAW_IROH,
             ).also { it.start() }
             TRANSPORT_FAKE -> {
                 check(isDebuggable()) { "Fake Triton transport is only available in debuggable builds" }
