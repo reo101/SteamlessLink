@@ -123,7 +123,7 @@ class ControllerBridgeService : Service() {
                     }
                     rawClientRef.set(raw)
                     synchronized(closeables) { closeables.add(raw) }
-                    status("UHID raw stream open; forwarding Triton reports")
+                    status("Connected to UHID raw bridge; forwarding Triton reports")
                     return@runCatching
                 }
 
@@ -136,7 +136,7 @@ class ControllerBridgeService : Service() {
                     }
                     localUinputRef.set(local)
                     synchronized(closeables) { closeables.add(local) }
-                    status("Local uinput stream open; forwarding mapped Xbox 360 reports")
+                    status("Connected to local uinput; forwarding mapped Xbox 360 reports")
                     return@runCatching
                 }
 
@@ -164,7 +164,7 @@ class ControllerBridgeService : Service() {
                 }
                 streamRef.set(stream)
                 synchronized(closeables) { closeables.add(stream) }
-                status("VIIPER stream open; forwarding reports")
+                status("Connected to VIIPER stream; forwarding reports")
             }.onFailure { error ->
                 val target = when (mode) {
                     MODE_UHID_RAW, MODE_UHID_RAW_IROH -> "UHID raw"
@@ -404,6 +404,7 @@ class ControllerBridgeService : Service() {
     private fun status(message: String) {
         Log.i(TAG, message)
         if (!shouldShowInNotification(message)) return
+        sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS, message))
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, notification(message))
     }
@@ -455,6 +456,8 @@ class ControllerBridgeService : Service() {
         const val EXTRA_KEY = "xyz.reo101.steamlesslink.extra.KEY"
         const val EXTRA_MODE = "xyz.reo101.steamlesslink.extra.MODE"
         const val EXTRA_IROH_TICKET = "xyz.reo101.steamlesslink.extra.IROH_TICKET"
+        const val ACTION_STATUS = "xyz.reo101.steamlesslink.action.STATUS"
+        const val EXTRA_STATUS = "xyz.reo101.steamlesslink.extra.STATUS"
         const val TRANSPORT_BLE = "ble"
         const val TRANSPORT_USB = "usb"
         const val TRANSPORT_FAKE = "fake"

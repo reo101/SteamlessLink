@@ -4,7 +4,10 @@ import android.Manifest
 import android.app.Activity
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -35,6 +38,12 @@ class MainActivity : Activity() {
     private lateinit var keyInput: EditText
     private lateinit var modeSpinner: Spinner
     private lateinit var transportSwitch: Switch
+    private val statusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val message = intent?.getStringExtra(ControllerBridgeService.EXTRA_STATUS) ?: return
+            appendStatus(message)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,6 +57,15 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
+            setOnApplyWindowInsetsListener { view, insets ->
+                view.setPadding(
+                    32 + insets.systemWindowInsetLeft,
+                    32 + insets.systemWindowInsetTop,
+                    32 + insets.systemWindowInsetRight,
+                    32 + insets.systemWindowInsetBottom,
+                )
+                insets
+            }
         }
 
         root.addView(TextView(this).apply {
@@ -230,7 +248,27 @@ class MainActivity : Activity() {
             ControllerBridgeService.MODE_UHID_RAW_IROH -> "Iroh ${irohTicket.take(24)}..."
             else -> "$host:$port"
         }
-        statusText.text = "Starting $transport/$mode bridge to $target...\n\n${statusText.text}"
+        appendStatus("Starting $transport/$mode bridge to $target...")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(ControllerBridgeService.ACTION_STATUS)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(statusReceiver, filter)
+        }
+    }
+
+    override fun onStop() {
+        unregisterReceiver(statusReceiver)
+        super.onStop()
+    }
+
+    private fun appendStatus(message: String) {
+        if (!::statusText.isInitialized) return
+        statusText.text = "$message\n\n${statusText.text}"
     }
 
     private fun refreshControllers() {
