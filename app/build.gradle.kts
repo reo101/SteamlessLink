@@ -5,6 +5,9 @@ plugins {
 
 val zigJniLibsDir = layout.buildDirectory.dir("generated/zig/jniLibs")
 val uinputHelperAssetsDir = layout.buildDirectory.dir("generated/uinput/assets")
+val irohJniLibsDir = providers.gradleProperty("steamless.irohJniLibs")
+    .orElse(providers.environmentVariable("STEAMLESS_IROH_JNI_LIBS"))
+    .orElse(providers.environmentVariable("IROH_JNI").map { "$it/jniLibs" })
 val packageZigNative = providers.gradleProperty("steamless.buildZig")
     .map { it.toBoolean() }
     .orElse(false)
@@ -62,9 +65,10 @@ android {
     if (packageUinputHelper.get()) {
         sourceSets["main"].assets.srcDir(uinputHelperAssetsDir)
     }
+    irohJniLibsDir.orNull?.let { sourceSets["main"].jniLibs.srcDir(file(it)) }
 
     packaging {
-        jniLibs.keepDebugSymbols += "**/libsteamless_protocol.so"
+        jniLibs.keepDebugSymbols += listOf("**/libsteamless_protocol.so", "**/libiroh_ffi.so")
     }
 }
 
@@ -157,6 +161,11 @@ tasks.named("check") {
 }
 
 dependencies {
+    implementation("computer.iroh:iroh:1.0.0") {
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    implementation("net.java.dev.jna:jna:5.15.0@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")

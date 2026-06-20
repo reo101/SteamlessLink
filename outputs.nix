@@ -35,6 +35,10 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           url = "github:vic/flake-file";
         };
 
+        crane = {
+          url = "github:ipetkov/crane";
+        };
+
         flake-parts = {
           url = "github:hercules-ci/flake-parts";
           inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -135,10 +139,18 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         androidEmulatorSdk = androidEmulatorComposition.androidsdk;
         zig = inputs'.zig-flake.packages.zig_0_16_0;
         serverZig = pkgs.zig_0_16 or pkgs.zig;
+        craneLib = inputs.crane.mkLib pkgs;
+        androidArm64CraneLib = inputs.crane.mkLib androidPkgs.pkgsCross.aarch64-android-prebuilt;
       in
       {
         packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
         packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
+        packages.iroh-android-jni = pkgs.callPackage ./nix/iroh-android-jni.nix {
+          craneLibArm64 = androidArm64CraneLib;
+        };
+        packages.steamless-uhid-iroh-proxy = pkgs.callPackage ./nix/iroh-uhid-proxy.nix {
+          inherit craneLib;
+        };
         packages.android-emulator-client = pkgs.callPackage ./nix/android-emulator-client.nix {
           androidSdk = androidEmulatorSdk;
         };
@@ -158,6 +170,11 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
         packages.default = self'.packages.steamless-uhid-server;
 
+        apps.steamless-uhid-iroh-proxy = {
+          type = "app";
+          program = lib.getExe self'.packages.steamless-uhid-iroh-proxy;
+          meta.description = "Print an Iroh endpoint ticket and forward it to the local Steamless UHID TCP bridge";
+        };
         apps.android-emulator-uhid-test = {
           type = "app";
           program = lib.getExe self'.packages.android-emulator-uhid-test;
@@ -170,6 +187,35 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
 
         checks = lib.optionalAttrs pkgs.stdenv.isLinux {
+          iroh-proxy-roundtrip = pkgs.runCommand "steamless-uhid-iroh-proxy-roundtrip" { nativeBuildInputs = [ pkgs.python3 pkgs.coreutils ]; } ''
+            set -euo pipefail
+            proxy=${lib.getExe self'.packages.steamless-uhid-iroh-proxy}
+            tmp=$(mktemp -d)
+            cleanup() { jobs -pr | xargs -r kill 2>/dev/null || true; rm -rf "$tmp"; }
+            trap cleanup EXIT
+
+            python -u - "$tmp/port" <<'PY' &
+            import socket, sys
+            port_file=sys.argv[1]
+            s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(1)
+            open(port_file,'w').write(str(s.getsockname()[1]))
+            conn,_=s.accept()
+            while True:
+                data=conn.recv(65536)
+                if not data: break
+                conn.sendall(data)
+            conn.close(); s.close()
+            PY
+
+            while [ ! -s "$tmp/port" ]; do sleep 0.05; done
+            port=$(cat "$tmp/port")
+            STEAMLESS_IROH_BIND_ADDR=127.0.0.1:0 "$proxy" "127.0.0.1:$port" >"$tmp/ticket" 2>"$tmp/proxy.log" &
+            for i in $(seq 1 100); do [ -s "$tmp/ticket" ] && break; sleep 0.1; done
+            ticket=$(head -n1 "$tmp/ticket")
+            printf steamless-iroh-ok | STEAMLESS_IROH_BIND_ADDR=127.0.0.1:0 timeout 30 "$proxy" connect "$ticket" >"$tmp/out"
+            test "$(cat "$tmp/out")" = steamless-iroh-ok
+            touch $out
+          '';
           steamless-uhid-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-uhid.nix {
             inherit pkgs lib;
             steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
@@ -202,12 +248,14 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
           ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";
           JAVA_HOME = pkgs.jdk17.home;
+          IROH_JNI = self'.packages.iroh-android-jni.outPath;
           GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/35.0.0/aapt2";
 
           shellHook = ''
             echo "SteamlessLink Android/Kotlin dev shell"
             echo "  ANDROID_HOME=$ANDROID_HOME"
             echo "  JAVA_HOME=$JAVA_HOME"
+            echo "  IROH_JNI=$IROH_JNI"
           '';
         };
       };

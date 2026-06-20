@@ -16,6 +16,7 @@ import xyz.reo101.steamlesslink.ble.BleTritonTransport
 import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
 import xyz.reo101.steamlesslink.protocol.NativeProtocol
 import xyz.reo101.steamlesslink.raw.UhidRawClient
+import xyz.reo101.steamlesslink.raw.irohRawUhidConnection
 import xyz.reo101.steamlesslink.triton.FakeTritonTransport
 import xyz.reo101.steamlesslink.triton.TritonRawState
 import xyz.reo101.steamlesslink.triton.TritonReportParser
@@ -53,20 +54,28 @@ class ControllerBridgeService : Service() {
         val transport = intent?.getStringExtra(EXTRA_TRANSPORT) ?: TRANSPORT_BLE
         val key = intent?.getStringExtra(EXTRA_KEY)
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
-        startForeground(NOTIFICATION_ID, notification("Starting $transport/$mode bridge to $host:$port"))
-        if (host.isBlank() && mode != MODE_LOCAL_UINPUT_XBOX360) {
+        val irohTicket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
+        val target = if (mode == MODE_UHID_RAW_IROH) "Iroh ticket" else "$host:$port"
+        startForeground(NOTIFICATION_ID, notification("Starting $transport/$mode bridge to $target"))
+        if (mode == MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
+            status("Iroh endpoint ticket is required")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (host.isBlank() && mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH) {
             status("Bridge host/IP is required")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        startBridge(host, port, key, transport, mode)
+        startBridge(host, port, key, transport, mode, irohTicket)
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startBridge(host: String, port: Int, key: String?, transport: String, mode: String) {
+    private fun startBridge(host: String, port: Int, key: String?, transport: String, mode: String, irohTicket: String = "") {
         stopBridge()
         val generation = bridgeGeneration.incrementAndGet()
         status("Starting ${transport.lowercase()} capture")
@@ -82,16 +91,32 @@ class ControllerBridgeService : Service() {
                 if (mode != MODE_LOCAL_UINPUT_XBOX360) bindProcessToWifiIfAvailable()
                 if (!isCurrentBridge(generation)) return@runCatching
                 if (!awaitCaptureReady(generation)) return@runCatching
-                if (mode == MODE_UHID_RAW) {
-                    status("Connecting to Steamless UHID raw bridge at $host:$port")
-                    val raw = UhidRawClient(
-                        host = host,
-                        port = port,
-                        onStatus = ::status,
-                        onGetReport = ::handleRawGetReport,
-                        onSetReport = ::handleRawSetReport,
-                        onOutputReport = ::handleRawOutputReport,
-                    )
+                if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH) {
+                    val connection = if (mode == MODE_UHID_RAW_IROH) {
+                        status("Connecting to Steamless UHID raw bridge over Iroh")
+                        irohRawUhidConnection(this@ControllerBridgeService, irohTicket)
+                    } else {
+                        status("Connecting to Steamless UHID raw bridge at $host:$port")
+                        null
+                    }
+                    val raw = if (connection != null) {
+                        UhidRawClient(
+                            connection = connection,
+                            onStatus = ::status,
+                            onGetReport = ::handleRawGetReport,
+                            onSetReport = ::handleRawSetReport,
+                            onOutputReport = ::handleRawOutputReport,
+                        )
+                    } else {
+                        UhidRawClient(
+                            host = host,
+                            port = port,
+                            onStatus = ::status,
+                            onGetReport = ::handleRawGetReport,
+                            onSetReport = ::handleRawSetReport,
+                            onOutputReport = ::handleRawOutputReport,
+                        )
+                    }
                     if (!isCurrentBridge(generation)) {
                         raw.close()
                         return@runCatching
@@ -142,7 +167,7 @@ class ControllerBridgeService : Service() {
                 status("VIIPER stream open; forwarding reports")
             }.onFailure { error ->
                 val target = when (mode) {
-                    MODE_UHID_RAW -> "UHID raw"
+                    MODE_UHID_RAW, MODE_UHID_RAW_IROH -> "UHID raw"
                     MODE_LOCAL_UINPUT_XBOX360 -> "local uinput"
                     else -> "VIIPER"
                 }
@@ -429,10 +454,12 @@ class ControllerBridgeService : Service() {
         const val EXTRA_TRANSPORT = "xyz.reo101.steamlesslink.extra.TRANSPORT"
         const val EXTRA_KEY = "xyz.reo101.steamlesslink.extra.KEY"
         const val EXTRA_MODE = "xyz.reo101.steamlesslink.extra.MODE"
+        const val EXTRA_IROH_TICKET = "xyz.reo101.steamlesslink.extra.IROH_TICKET"
         const val TRANSPORT_BLE = "ble"
         const val TRANSPORT_USB = "usb"
         const val TRANSPORT_FAKE = "fake"
         const val MODE_UHID_RAW = "uhid-raw"
+        const val MODE_UHID_RAW_IROH = "uhid-raw-iroh"
         const val MODE_VIIPER_XBOX360 = "viiper-xbox360"
         const val MODE_LOCAL_UINPUT_XBOX360 = "local-uinput-xbox360"
         private const val DEFAULT_HOST = ""

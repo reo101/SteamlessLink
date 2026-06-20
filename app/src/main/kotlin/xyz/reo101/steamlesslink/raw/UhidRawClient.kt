@@ -8,26 +8,37 @@ import xyz.reo101.steamlesslink.util.u8
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
 class UhidRawClient(
-    host: String,
-    port: Int,
+    private val connection: RawUhidConnection,
     private val onStatus: (String) -> Unit,
     private val onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
     private val onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
     private val onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
-    connectTimeoutMs: Int = 10_000,
 ) : Closeable {
-    private val socket = Socket().apply {
-        tcpNoDelay = true
-        connect(InetSocketAddress(host, port), connectTimeoutMs)
-        soTimeout = 0
-    }
-    private val input = DataInputStream(socket.getInputStream())
-    private val output = DataOutputStream(socket.getOutputStream())
+    constructor(
+        host: String,
+        port: Int,
+        onStatus: (String) -> Unit,
+        onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
+        onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
+        onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
+        connectTimeoutMs: Int = 10_000,
+    ) : this(
+        connection = RawUhidConnection.tcp(host, port, connectTimeoutMs),
+        onStatus = onStatus,
+        onGetReport = onGetReport,
+        onSetReport = onSetReport,
+        onOutputReport = onOutputReport,
+    )
+
+    private val input = DataInputStream(connection.input)
+    private val output = DataOutputStream(connection.output)
     private val closed = AtomicBoolean(false)
     private val inputQueueLock = Object()
     private val queuedInputReports = ArrayDeque<ByteArray>()
@@ -170,7 +181,7 @@ class UhidRawClient(
             queuedInputReports.clear()
             inputQueueLock.notifyAll()
         }
-        runCatching { socket.close() }
+        runCatching { connection.close() }
         writer.interrupt()
     }
 
@@ -183,5 +194,24 @@ class UhidRawClient(
         private const val FRAME_SET_REPORT = 0x83
         private const val MAX_INPUT_REPORT_QUEUE = 8
         private const val INPUT_DROP_STATUS_INTERVAL_MS = 1000L
+    }
+}
+
+class RawUhidConnection(
+    val input: InputStream,
+    val output: OutputStream,
+    private val closeAction: () -> Unit,
+) : Closeable {
+    override fun close() = closeAction()
+
+    companion object {
+        fun tcp(host: String, port: Int, connectTimeoutMs: Int = 10_000): RawUhidConnection {
+            val socket = Socket().apply {
+                tcpNoDelay = true
+                connect(InetSocketAddress(host, port), connectTimeoutMs)
+                soTimeout = 0
+            }
+            return RawUhidConnection(socket.getInputStream(), socket.getOutputStream()) { socket.close() }
+        }
     }
 }

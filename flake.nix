@@ -9,6 +9,7 @@
   };
 
   inputs = {
+    crane.url = "github:ipetkov/crane";
     flake-file.url = "github:vic/flake-file";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";

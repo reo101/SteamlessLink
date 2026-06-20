@@ -26,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var hostInput: EditText
     private lateinit var portInput: EditText
+    private lateinit var irohTicketInput: EditText
     private lateinit var keyInput: EditText
     private lateinit var transportSwitch: Switch
 
@@ -68,6 +69,13 @@ class MainActivity : Activity() {
         }
         root.addView(portInput)
 
+        irohTicketInput = EditText(this).apply {
+            hint = "Iroh endpoint ticket (Raw Iroh only)"
+            setSingleLine(true)
+            setText(prefs.getString(PREF_IROH_TICKET, ""))
+        }
+        root.addView(irohTicketInput)
+
         keyInput = EditText(this).apply {
             hint = "VIIPER key (unused for UHID raw)"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -93,6 +101,10 @@ class MainActivity : Activity() {
         buttonRow.addView(Button(this).apply {
             text = "Raw"
             setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_UHID_RAW) }
+        })
+        buttonRow.addView(Button(this).apply {
+            text = "Raw Iroh"
+            setOnClickListener { startBridge(selectedTransport(), ControllerBridgeService.MODE_UHID_RAW_IROH) }
         })
         buttonRow.addView(Button(this).apply {
             text = "Xbox"
@@ -136,37 +148,49 @@ class MainActivity : Activity() {
         val defaultPort = if (mode == ControllerBridgeService.MODE_VIIPER_XBOX360) DEFAULT_VIIPER_PORT else DEFAULT_RAW_UHID_PORT
         val port = intent.getIntExtra(ControllerBridgeService.EXTRA_PORT, defaultPort)
         val key = intent.getStringExtra(ControllerBridgeService.EXTRA_KEY).orEmpty()
-        startBridge(host, port, key, transport, mode)
+        val irohTicket = intent.getStringExtra(ControllerBridgeService.EXTRA_IROH_TICKET).orEmpty()
+        startBridge(host, port, key, transport, mode, irohTicket)
     }
 
     private fun startBridge(transport: String, mode: String) {
         val host = sanitizeHost(hostInput.text.toString())
-        if (host.isBlank() && mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) {
+        val irohTicket = irohTicketInput.text.toString().trim()
+        if (mode == ControllerBridgeService.MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
+            statusText.text = "Enter the Iroh endpoint ticket first.\n\n${statusText.text}"
+            return
+        }
+        if (host.isBlank() && mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 && mode != ControllerBridgeService.MODE_UHID_RAW_IROH) {
             statusText.text = "Enter the bridge host/IP first.\n\n${statusText.text}"
             return
         }
         val typedPort = portInput.text.toString().toIntOrNull()
         val port = when {
-            mode == ControllerBridgeService.MODE_UHID_RAW && (typedPort == null || typedPort == DEFAULT_VIIPER_PORT) -> DEFAULT_RAW_UHID_PORT
+            (mode == ControllerBridgeService.MODE_UHID_RAW || mode == ControllerBridgeService.MODE_UHID_RAW_IROH) && (typedPort == null || typedPort == DEFAULT_VIIPER_PORT) -> DEFAULT_RAW_UHID_PORT
             mode == ControllerBridgeService.MODE_VIIPER_XBOX360 && (typedPort == null || typedPort == DEFAULT_RAW_UHID_PORT) -> DEFAULT_VIIPER_PORT
             mode == ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 -> 0
             else -> typedPort
         } ?: DEFAULT_RAW_UHID_PORT
         prefs.edit().putBoolean(PREF_TRANSPORT_USB, transport == ControllerBridgeService.TRANSPORT_USB).apply()
-        startBridge(host, port, keyInput.text.toString(), transport, mode)
+        startBridge(host, port, keyInput.text.toString(), transport, mode, irohTicket)
     }
 
-    private fun startBridge(host: String, port: Int, key: String, transport: String, mode: String) {
-        if (host.isBlank() && mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) {
+    private fun startBridge(host: String, port: Int, key: String, transport: String, mode: String, irohTicket: String = "") {
+        if (mode == ControllerBridgeService.MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
+            statusText.text = "Enter the Iroh endpoint ticket first.\n\n${statusText.text}"
+            return
+        }
+        if (host.isBlank() && mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 && mode != ControllerBridgeService.MODE_UHID_RAW_IROH) {
             statusText.text = "Enter the bridge host/IP first.\n\n${statusText.text}"
             return
         }
         if (!maybeRequestShizukuPermission(mode)) return
         if (host.isNotBlank()) hostInput.setText(host)
+        if (irohTicket.isNotBlank()) irohTicketInput.setText(irohTicket)
         if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) portInput.setText(port.toString())
         keyInput.setText(key)
         prefs.edit().apply {
             if (host.isNotBlank()) putString(PREF_HOST, host)
+            if (irohTicket.isNotBlank()) putString(PREF_IROH_TICKET, irohTicket)
             if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) putInt(PREF_PORT, port)
             putString(PREF_KEY, key)
         }.apply()
@@ -175,6 +199,7 @@ class MainActivity : Activity() {
             .putExtra(ControllerBridgeService.EXTRA_HOST, host)
             .putExtra(ControllerBridgeService.EXTRA_PORT, port)
             .putExtra(ControllerBridgeService.EXTRA_KEY, key)
+            .putExtra(ControllerBridgeService.EXTRA_IROH_TICKET, irohTicket)
             .putExtra(ControllerBridgeService.EXTRA_TRANSPORT, transport)
             .putExtra(ControllerBridgeService.EXTRA_MODE, mode)
         if (Build.VERSION.SDK_INT >= 26) {
@@ -182,7 +207,11 @@ class MainActivity : Activity() {
         } else {
             startService(serviceIntent)
         }
-        val target = if (mode == ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) "local uinput" else "$host:$port"
+        val target = when (mode) {
+            ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 -> "local uinput"
+            ControllerBridgeService.MODE_UHID_RAW_IROH -> "Iroh ${irohTicket.take(24)}..."
+            else -> "$host:$port"
+        }
         statusText.text = "Starting $transport/$mode bridge to $target...\n\n${statusText.text}"
     }
 
@@ -192,9 +221,9 @@ class MainActivity : Activity() {
             appendLine()
             appendUsbStatus()
             appendLine()
-            appendLine("Use the BLE/USB transport toggle, then choose Raw, Xbox, or Local Xbox mode.")
+            appendLine("Use the BLE/USB transport toggle, then choose Raw, Raw Iroh, Xbox, or Local Xbox mode.")
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
-            appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Xbox fallback points at a VIIPER server.")
+            appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Raw Iroh uses an endpoint ticket instead of host:port. Xbox fallback points at a VIIPER server.")
             appendLine("Local Xbox mode creates a virtual Android gamepad through Shizuku shell or su/root; build the APK with -Psteamless.buildUinputHelper=true.")
             appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
         }
@@ -296,6 +325,7 @@ class MainActivity : Activity() {
         const val EXTRA_AUTOSTART = "xyz.reo101.steamlesslink.extra.AUTOSTART"
         private const val PREF_HOST = "host"
         private const val PREF_PORT = "port"
+        private const val PREF_IROH_TICKET = "iroh_ticket"
         private const val PREF_KEY = "key"
         private const val PREF_TRANSPORT_USB = "transport_usb"
         private const val DEFAULT_RAW_UHID_PORT = 3244

@@ -86,12 +86,30 @@ Default port conventions used by the UI:
 
 The main UI has a BLE/USB transport toggle plus mode buttons:
 
-- `Raw` — preferred raw UHID path
+- `Raw` — preferred raw UHID path over TCP host/IP + port
+- `Raw Iroh` — raw UHID path over an Iroh endpoint ticket instead of host/IP + port
 - `Xbox` — VIIPER Xbox 360 fallback
 - `Local Xbox` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
 - `Stop`
 
 USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
+
+### Raw UHID over Iroh
+
+Build the APK with the Android Iroh JNI library:
+
+```sh
+export IROH_JNI=$(nix build --print-out-paths .#iroh-android-jni)
+nix develop -c gradle :app:assembleDebug
+```
+
+On the Steam host, run the normal UHID bridge, then run the Iroh proxy and paste
+its printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
+
+```sh
+steamless-uhid-server --listen-host 127.0.0.1 --listen-port 3244
+nix run .#steamless-uhid-iroh-proxy -- 127.0.0.1:3244
+```
 
 ## Server-side bridge
 
