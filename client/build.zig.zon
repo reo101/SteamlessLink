@@ -1,0 +1,16 @@
+.{
+    .name = .steamless_hidraw_client,
+    .version = "0.1.0",
+    .fingerprint = 0x1c14d4728f31c2a5,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .steamless_core = .{
+            .path = "../core",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
