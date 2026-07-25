@@ -74,10 +74,21 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
               );
             };
           };
+
+        steamlessHidrawClientModule =
+          { pkgs, lib, ... }:
+          {
+            imports = [ ./nix/modules/steamless-hidraw-client.nix ];
+            services.steamless-hidraw-client.package = lib.mkDefault (
+              withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-hidraw-client)
+            );
+          };
       in
       {
         nixosModules.steamless-uhid = steamlessUhidModule;
+        nixosModules.steamless-hidraw-client = steamlessHidrawClientModule;
         nixosModules.default = steamlessUhidModule;
+        homeModules.steamless-hidraw-client = ./nix/modules/home/steamless-hidraw-client.nix;
       };
 
     perSystem =
@@ -165,6 +176,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
       in
       {
         packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
+        packages.steamless-hidraw-client = pkgs.callPackage ./client/package.nix { zig = serverZig; };
         packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
         packages.iroh-android-jni = pkgs.callPackage ./nix/iroh-android-jni.nix {
           craneLibArm64 = androidArm64CraneLib;
@@ -256,6 +268,13 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             inherit pkgs lib;
             steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
             steamlessUhidPackage = self'.packages.steamless-uhid-server;
+          });
+          steamless-hidraw-client-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-hidraw-client.nix {
+            inherit pkgs lib;
+            steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
+            steamlessUhidPackage = self'.packages.steamless-uhid-server;
+            steamlessHidrawClientModule = config.flake.nixosModules.steamless-hidraw-client;
+            steamlessHidrawClientPackage = self'.packages.steamless-hidraw-client;
           });
           steamless-uinput-gamepad-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/uinput-gamepad.nix {
             inherit pkgs lib;

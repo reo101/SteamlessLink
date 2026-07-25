@@ -174,6 +174,30 @@ From a flake-based NixOS config:
 
 The current protocol is unauthenticated raw TCP. Bind it only to trusted networks, firewall it to the Android device, or use a tunnel/proxy.
 
+### Linux controller client
+
+To forward a local Triton controller from one NixOS machine to another Steam
+host, import `nixosModules.steamless-hidraw-client` and enable:
+
+```nix
+services.steamless-hidraw-client = {
+  enable = true;
+  host = "steam-host";
+};
+```
+
+Capture is enabled by default: it temporarily rebinds the matching controller,
+so local Steam loses access while the remote bridge runs. Toggle it at runtime:
+
+```sh
+systemctl stop steamless-hidraw-capture.service   # return it to local Steam
+systemctl start steamless-hidraw-capture.service  # forward it remotely
+```
+
+`homeModules.steamless-hidraw-client` provides the same unprivileged bridge as
+a user service when the desktop user already owns the hidraw device; it cannot
+capture a controller from local Steam.
+
 ## BLE behavior
 
 The app will:
