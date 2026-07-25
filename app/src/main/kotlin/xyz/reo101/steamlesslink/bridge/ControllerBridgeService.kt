@@ -88,7 +88,7 @@ class ControllerBridgeService : Service() {
 
         worker.execute {
             runCatching {
-                if (mode != MODE_LOCAL_UINPUT_XBOX360) bindProcessToWifiIfAvailable()
+                if (mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH) bindProcessToWifiIfAvailable()
                 if (!isCurrentBridge(generation)) return@runCatching
                 if (!awaitCaptureReady(generation)) return@runCatching
                 if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH) {
