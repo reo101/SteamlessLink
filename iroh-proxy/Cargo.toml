@@ -1,5 +1,5 @@
 [package]
-name = "steamless-uhid-iroh-proxy"
+name = "steamless-link-iroh-proxy"
 version = "0.1.0"
 edition = "2024"
 

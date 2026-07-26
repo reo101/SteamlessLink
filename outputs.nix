@@ -61,34 +61,34 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
     flake =
       let
-        steamlessUhidModule =
+        steamlessLinkHostModule =
           { pkgs, lib, ... }:
           {
-            imports = [ ./nix/modules/steamless-uhid.nix ];
-            services.steamless-uhid = {
+            imports = [ ./nix/modules/steamless-link-host.nix ];
+            services.steamless-link-host = {
               package = lib.mkDefault (
-                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-uhid-server)
+                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-link-host)
               );
               iroh.package = lib.mkDefault (
-                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-uhid-iroh-proxy)
+                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-link-iroh-proxy)
               );
             };
           };
 
-        steamlessHidrawClientModule =
+        steamlessLinkControllerModule =
           { pkgs, lib, ... }:
           {
-            imports = [ ./nix/modules/steamless-hidraw-client.nix ];
-            services.steamless-hidraw-client.package = lib.mkDefault (
-              withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-hidraw-client)
+            imports = [ ./nix/modules/steamless-link-controller.nix ];
+            services.steamless-link-controller.package = lib.mkDefault (
+              withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-link-controller)
             );
           };
       in
       {
-        nixosModules.steamless-uhid = steamlessUhidModule;
-        nixosModules.steamless-hidraw-client = steamlessHidrawClientModule;
-        nixosModules.default = steamlessUhidModule;
-        homeModules.steamless-hidraw-client = ./nix/modules/home/steamless-hidraw-client.nix;
+        nixosModules.steamless-link-host = steamlessLinkHostModule;
+        nixosModules.steamless-link-controller = steamlessLinkControllerModule;
+        nixosModules.default = steamlessLinkHostModule;
+        homeModules.steamless-link-controller = ./nix/modules/home/steamless-link-controller.nix;
       };
 
     perSystem =
@@ -175,69 +175,69 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         androidX86_64CraneLib = inputs.crane.mkLib androidX86_64Pkgs;
       in
       {
-        packages.steamless-uhid-server = pkgs.callPackage ./server/package.nix { zig = serverZig; };
-        packages.steamless-hidraw-client = pkgs.callPackage ./client/package.nix { zig = serverZig; };
+        packages.steamless-link-host = pkgs.callPackage ./server/package.nix { zig = serverZig; };
+        packages.steamless-link-controller = pkgs.callPackage ./client/package.nix { zig = serverZig; };
         packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
         packages.iroh-android-jni = pkgs.callPackage ./nix/iroh-android-jni.nix {
           craneLibArm64 = androidArm64CraneLib;
           craneLibX86_64 = androidX86_64CraneLib;
         };
-        packages.steamless-uhid-iroh-proxy = pkgs.callPackage ./nix/iroh-uhid-proxy.nix {
+        packages.steamless-link-iroh-proxy = pkgs.callPackage ./nix/iroh-link-proxy.nix {
           inherit craneLib;
         };
         packages.android-emulator-client = pkgs.callPackage ./nix/android-emulator-client.nix {
           androidSdk = androidEmulatorSdk;
         };
-        packages.android-emulator-uhid-test = pkgs.callPackage ./nix/android-emulator-uhid-test.nix {
+        packages.android-emulator-link-test = pkgs.callPackage ./nix/android-emulator-link-test.nix {
           androidSdk = androidEmulatorSdk;
           steamlessIrohJni = self'.packages.iroh-android-jni;
-          steamlessUhidIrohProxy = self'.packages.steamless-uhid-iroh-proxy;
+          steamlessLinkIrohProxy = self'.packages.steamless-link-iroh-proxy;
         };
         packages.android-emulator-iroh-test = pkgs.writeShellApplication {
           name = "steamless-android-emulator-iroh-test";
-          runtimeInputs = [ self'.packages.android-emulator-uhid-test ];
+          runtimeInputs = [ self'.packages.android-emulator-link-test ];
           text = ''
-            STEAMLESS_ANDROID_TEST_IROH=1 exec steamless-android-emulator-uhid-test "$@"
+            STEAMLESS_ANDROID_TEST_IROH=1 exec steamless-android-emulator-link-test "$@"
           '';
         };
-        packages.android-emulator-uhid-vm-test-driver = pkgs.testers.runNixOSTest (import ./nix/tests/android-emulator-uhid.nix {
+        packages.android-emulator-link-vm-test-driver = pkgs.testers.runNixOSTest (import ./nix/tests/android-emulator-link.nix {
           inherit pkgs lib;
-          steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
-          steamlessUhidPackage = self'.packages.steamless-uhid-server;
+          steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
+          steamlessLinkHostPackage = self'.packages.steamless-link-host;
           androidEmulatorClient = self'.packages.android-emulator-client;
           androidSdk = androidEmulatorSdk;
         });
-        packages.android-emulator-uhid-vm-test = pkgs.callPackage ./nix/android-emulator-uhid-vm-test.nix {
+        packages.android-emulator-link-vm-test = pkgs.callPackage ./nix/android-emulator-link-vm-test.nix {
           androidSdk = androidEmulatorSdk;
-          testDriver = self'.packages.android-emulator-uhid-vm-test-driver.driver;
+          testDriver = self'.packages.android-emulator-link-vm-test-driver.driver;
         };
-        packages.default = self'.packages.steamless-uhid-server;
+        packages.default = self'.packages.steamless-link-host;
 
-        apps.steamless-uhid-iroh-proxy = {
+        apps.steamless-link-iroh-proxy = {
           type = "app";
-          program = lib.getExe self'.packages.steamless-uhid-iroh-proxy;
-          meta.description = "Print an Iroh endpoint ticket and forward it to the local Steamless UHID TCP bridge";
+          program = lib.getExe self'.packages.steamless-link-iroh-proxy;
+          meta.description = "Print an Iroh endpoint ticket and forward it to a local Steamless Link host";
         };
-        apps.android-emulator-uhid-test = {
+        apps.android-emulator-link-test = {
           type = "app";
-          program = lib.getExe self'.packages.android-emulator-uhid-test;
-          meta.description = "Run the SteamlessLink fake-controller UHID test in an Android emulator";
+          program = lib.getExe self'.packages.android-emulator-link-test;
+          meta.description = "Run the Steamless Link Android controller test";
         };
         apps.android-emulator-iroh-test = {
           type = "app";
           program = lib.getExe self'.packages.android-emulator-iroh-test;
-          meta.description = "Run the Android emulator app through Iroh to a fake UHID server";
+          meta.description = "Run the Android emulator app through Iroh to a fake Steamless Link host";
         };
-        apps.android-emulator-uhid-vm-test = {
+        apps.android-emulator-link-vm-test = {
           type = "app";
-          program = lib.getExe self'.packages.android-emulator-uhid-vm-test;
-          meta.description = "Run the Android emulator app against a NixOS UHID VM";
+          program = lib.getExe self'.packages.android-emulator-link-vm-test;
+          meta.description = "Run the Android emulator app against a NixOS Steamless Link host";
         };
 
         checks = lib.optionalAttrs pkgs.stdenv.isLinux {
-          iroh-proxy-roundtrip = pkgs.runCommand "steamless-uhid-iroh-proxy-roundtrip" { nativeBuildInputs = [ pkgs.python3 pkgs.coreutils ]; } ''
+          iroh-proxy-roundtrip = pkgs.runCommand "steamless-link-iroh-proxy-roundtrip" { nativeBuildInputs = [ pkgs.python3 pkgs.coreutils ]; } ''
             set -euo pipefail
-            proxy=${lib.getExe self'.packages.steamless-uhid-iroh-proxy}
+            proxy=${lib.getExe self'.packages.steamless-link-iroh-proxy}
             tmp=$(mktemp -d)
             cleanup() { jobs -pr | xargs -r kill 2>/dev/null || true; rm -rf "$tmp"; }
             trap cleanup EXIT
@@ -264,17 +264,17 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             test "$(cat "$tmp/out")" = steamless-iroh-ok
             touch $out
           '';
-          steamless-uhid-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-uhid.nix {
+          steamless-link-host-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-link-host.nix {
             inherit pkgs lib;
-            steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
-            steamlessUhidPackage = self'.packages.steamless-uhid-server;
+            steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
+            steamlessLinkHostPackage = self'.packages.steamless-link-host;
           });
-          steamless-hidraw-client-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-hidraw-client.nix {
+          steamless-link-controller-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-link-controller.nix {
             inherit pkgs lib;
-            steamlessUhidModule = config.flake.nixosModules.steamless-uhid;
-            steamlessUhidPackage = self'.packages.steamless-uhid-server;
-            steamlessHidrawClientModule = config.flake.nixosModules.steamless-hidraw-client;
-            steamlessHidrawClientPackage = self'.packages.steamless-hidraw-client;
+            steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
+            steamlessLinkHostPackage = self'.packages.steamless-link-host;
+            steamlessLinkControllerModule = config.flake.nixosModules.steamless-link-controller;
+            steamlessLinkControllerPackage = self'.packages.steamless-link-controller;
           });
           steamless-uinput-gamepad-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/uinput-gamepad.nix {
             inherit pkgs lib;

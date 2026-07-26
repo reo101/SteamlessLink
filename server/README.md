@@ -1,6 +1,6 @@
-# Steamless UHID server
+# Steamless Link host
 
-This directory contains the non-Android half of SteamlessLink: a small Zig/Linux daemon that creates a virtual Steam Controller using `/dev/uhid` and proxies Steam's hidraw feature/output traffic back to the Android app.
+This directory contains the Steam-host half of SteamlessLink: a small Zig/Linux daemon that creates a virtual Steam Controller using `/dev/uhid` and proxies Steam's hidraw feature/output traffic back to a controller.
 
 ## Requirements
 
@@ -24,16 +24,16 @@ Useful upstream docs:
 sudo modprobe uhid
 
 zig build -Doptimize=ReleaseSafe
-sudo install -Dm755 zig-out/bin/steamless-uhid-server /usr/local/bin/steamless-uhid-server
+sudo install -Dm755 zig-out/bin/steamless-link-host /usr/local/bin/steamless-link-host
 
-sudo install -Dm644 60-steamless-uhid.rules /etc/udev/rules.d/60-steamless-uhid.rules
-sudo install -Dm644 steamless-uhid.service /etc/systemd/system/steamless-uhid.service
+sudo install -Dm644 60-steamless-link-host.rules /etc/udev/rules.d/60-steamless-link-host.rules
+sudo install -Dm644 steamless-link-host.service /etc/systemd/system/steamless-link-host.service
 
 # Edit User= and ExecStart= in the service if needed.
 sudo systemctl daemon-reload
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=misc --subsystem-match=hidraw
-sudo systemctl enable --now steamless-uhid
+sudo systemctl enable --now steamless-link-host
 ```
 
 If your distro does not have an `input` group, adjust the udev rule and service `SupplementaryGroups=` accordingly. Running the daemon as the same user that runs Steam is the simplest permission model.
@@ -43,10 +43,10 @@ If your distro does not have an `input` group, adjust the udev rule and service 
 Build the daemon with:
 
 ```sh
-nix build .#steamless-uhid-server
+nix build .#steamless-link-host
 ```
 
-On NixOS, import `nixosModules.steamless-uhid` from this flake and enable `services.steamless-uhid`. The flake module defaults to this flake's Zig 0.16-built package. If you import `nix/modules/steamless-uhid.nix` directly, set `services.steamless-uhid.package` to a package built with Zig 0.16+.
+On NixOS, import `nixosModules.steamless-link-host` from this flake and enable `services.steamless-link-host`. The flake module defaults to this flake's Zig 0.16-built package. If you import `nix/modules/steamless-link-host.nix` directly, set `services.steamless-link-host.package` to a package built with Zig 0.16+.
 
 ## Security
 
@@ -69,13 +69,13 @@ u16be payload_length
 payload bytes
 ```
 
-Android -> server:
+Controller -> host:
 
 - `0x01 FRAME_INPUT`: numbered HID input report, normally `0x45` + 45-byte Triton BLE payload
 - `0x02 FRAME_GET_REPORT_REPLY`: `u32le request_id`, `u16le errno`, report bytes
 - `0x03 FRAME_SET_REPORT_REPLY`: `u32le request_id`, `u16le errno`
 
-Server -> Android:
+Host -> controller:
 
 - `0x81 FRAME_OUTPUT`: `u8 uhid_report_type`, HID output report bytes
 - `0x82 FRAME_GET_REPORT`: `u32le request_id`, `u8 report_number`, `u8 report_type`

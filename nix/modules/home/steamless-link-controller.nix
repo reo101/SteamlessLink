@@ -1,4 +1,4 @@
-# Home Manager module for steamless-hidraw-client.
+# Home Manager module for the Steamless Link controller bridge.
 #
 # Runs the bridge as an unprivileged systemd user service. This relies on
 # the desktop user already having access to the controller's hidraw node
@@ -11,16 +11,16 @@
   ...
 }:
 let
-  cfg = config.services.steamless-hidraw-client;
+  cfg = config.services.steamless-link-controller;
   hex = value: "0x${lib.toHexString value}";
 in
 {
-  options.services.steamless-hidraw-client = {
-    enable = lib.mkEnableOption "SteamlessLink hidraw-to-network controller bridge (user service)";
+  options.services.steamless-link-controller = {
+    enable = lib.mkEnableOption "Steamless Link controller bridge (user service)";
 
     package = lib.mkOption {
       type = lib.types.package;
-      description = "Package providing the steamless-hidraw-client executable.";
+      description = "Package providing the steamless-link-controller executable.";
     };
 
     device = lib.mkOption {
@@ -45,13 +45,13 @@ in
     host = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1";
-      description = "steamless-uhid-server (or iroh proxy) address to connect to.";
+      description = "Steamless Link host (or Iroh proxy) address to connect to.";
     };
 
     port = lib.mkOption {
       type = lib.types.port;
       default = 3244;
-      description = "steamless-uhid-server TCP port.";
+      description = "Steamless Link host TCP port.";
     };
 
     reconnectMs = lib.mkOption {
@@ -69,14 +69,14 @@ in
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Extra command-line arguments passed to steamless-hidraw-client.";
+      description = "Extra command-line arguments passed to steamless-link-controller.";
     };
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.user.services.steamless-hidraw-client = {
+    systemd.user.services.steamless-link-controller = {
       Unit = {
-        Description = "SteamlessLink hidraw-to-network controller bridge";
+        Description = "Steamless Link controller bridge";
         After = [ "network.target" ];
       };
       Service = {

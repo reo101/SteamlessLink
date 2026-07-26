@@ -5,7 +5,7 @@
 }:
 
 stdenv.mkDerivation {
-  pname = "steamless-uhid-server";
+  pname = "steamless-link-host";
   version = "0.1.0";
 
   src = ./.;
@@ -48,17 +48,17 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 zig-out/bin/steamless-uhid-server $out/bin/steamless-uhid-server
+    install -Dm755 zig-out/bin/steamless-link-host $out/bin/steamless-link-host
 
-    install -Dm644 60-steamless-uhid.rules $out/lib/udev/rules.d/60-steamless-uhid.rules
-    install -Dm644 steamless-uhid.service $out/lib/systemd/system/steamless-uhid.service
+    install -Dm644 60-steamless-link-host.rules $out/lib/udev/rules.d/60-steamless-link-host.rules
+    install -Dm644 steamless-link-host.service $out/lib/systemd/system/steamless-link-host.service
 
     runHook postInstall
   '';
 
   meta = {
-    description = "SteamlessLink raw Triton-to-UHID bridge";
-    mainProgram = "steamless-uhid-server";
+    description = "Steamless Link host for remote controllers";
+    mainProgram = "steamless-link-host";
     platforms = lib.platforms.linux;
   };
 }

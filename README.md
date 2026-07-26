@@ -5,7 +5,7 @@ Android/Kotlin bridge for using a Steam Controller / Triton controller with a re
 Preferred path:
 
 ```text
-Steam Controller BLE -> Android GATT -> raw Triton reports -> TCP -> Steamless UHID bridge -> Linux UHID/hidraw -> Steam
+Steam Controller BLE -> Android GATT -> raw Triton reports -> TCP -> Steamless Link host -> virtual controller -> Steam
 ```
 
 Fallback paths:
@@ -15,7 +15,7 @@ Steam Controller BLE/USB -> Android -> Triton parser -> VIIPER xbox360 stream
 Steam Controller BLE/USB -> Android -> Triton parser -> local /dev/uinput Xbox gamepad
 ```
 
-The raw UHID path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. The VIIPER path is a known-good remote Xbox 360 fallback. The local uinput path is for Android games/apps on the phone and requires Shizuku shell access or root.
+The Steamless Link path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. The VIIPER path is a known-good remote Xbox 360 fallback. The local uinput path is for Android games/apps on the phone and requires Shizuku shell access or root.
 
 ## Build / install Android app
 
@@ -56,19 +56,18 @@ APK includes a fake Triton transport that emits numbered `0x45` reports. Run the
 host-side emulator smoke test with:
 
 ```sh
-nix run .#android-emulator-uhid-test
+nix run .#android-emulator-link-test
 ```
 
 That command builds the debug APK, boots a headless Android emulator, starts the
-app in fake/raw-UHID mode through `MainActivity`, and verifies that the app
+app in fake controller mode through `MainActivity`, and verifies that the app
 connects to a host TCP server and sends raw `0x45` input frames.
 
-To test the same Android fake transport against the repo's NixOS UHID service
-module and real Linux `hidraw`/UHID plumbing, run the optional VM integration
-app:
+To test the same Android fake transport against the repo's NixOS host module
+and real Linux controller plumbing, run the optional VM integration app:
 
 ```sh
-nix run .#android-emulator-uhid-vm-test
+nix run .#android-emulator-link-vm-test
 ```
 
 Both emulator commands require KVM and intentionally stay out of default flake
@@ -76,24 +75,24 @@ checks/CI.
 
 ## Android app configuration
 
-Remote raw UHID and VIIPER modes need a server host/IP and port. Local uinput
+Remote Steamless Link and VIIPER modes need a host/IP and port. Local uinput
 mode does not use a remote server.
 
 Default port conventions used by the UI:
 
-- Raw UHID bridge: `3244`
+- Steamless Link: `3244`
 - VIIPER Xbox fallback: `3242`
 
 The main UI has a BLE/USB transport toggle, a connection method dropdown, and Start/Stop buttons:
 
-- `Raw UHID` — preferred raw UHID path over TCP host/IP + port
-- `Raw Iroh` — raw UHID path over an Iroh endpoint ticket instead of host/IP + port
+- `Steamless Link` — preferred controller path over TCP host/IP + port
+- `Steamless Link Iroh` — controller path over an Iroh endpoint ticket
 - `VIIPER Xbox` — VIIPER Xbox 360 fallback
 - `Local Xbox` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
 
 USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
 
-### Raw UHID over Iroh
+### Steamless Link over Iroh
 
 Build the APK with the Android Iroh JNI library:
 
@@ -102,19 +101,19 @@ export IROH_JNI=$(nix build --print-out-paths .#iroh-android-jni)
 nix develop -c gradle :app:assembleDebug
 ```
 
-On the Steam host, run the normal UHID bridge, then run the Iroh proxy and paste
-its printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
+On the Steam host, run the host service, then run the Iroh proxy and paste its
+printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
 
 ```sh
-steamless-uhid-server --listen-host 127.0.0.1 --listen-port 3244
-nix run .#steamless-uhid-iroh-proxy -- 127.0.0.1:3244
+steamless-link-host --listen-host 127.0.0.1 --listen-port 3244
+nix run .#steamless-link-iroh-proxy -- 127.0.0.1:3244
 ```
 
 With the NixOS module, enable both services and read the ticket from the proxy
 journal:
 
 ```nix
-services.steamless-uhid = {
+services.steamless-link-host = {
   enable = true;
   user = "steam";
   listenHost = "127.0.0.1";
@@ -125,19 +124,19 @@ services.steamless-uhid = {
 ```
 
 ```sh
-journalctl -u steamless-uhid-iroh-proxy -b -o cat | grep '^endpoint' | tail -1
+journalctl -u steamless-link-iroh-proxy -b -o cat | grep '^endpoint' | tail -1
 ```
 
-## Server-side bridge
+## Steam host
 
-This repository now ships the UHID bridge under [`server/`](server/):
+This repository ships the Steamless Link host under [`server/`](server/):
 
-- [`server/src/main.zig`](server/src/main.zig): standalone Zig UHID daemon
-- [`server/60-steamless-uhid.rules`](server/60-steamless-uhid.rules): udev permissions
-- [`server/steamless-uhid.service`](server/steamless-uhid.service): example systemd service
-- [`nix/modules/steamless-uhid.nix`](nix/modules/steamless-uhid.nix): NixOS module
+- [`server/src/main.zig`](server/src/main.zig): host daemon
+- [`server/60-steamless-link-host.rules`](server/60-steamless-link-host.rules): udev permissions
+- [`server/steamless-link-host.service`](server/steamless-link-host.service): example service
+- [`nix/modules/steamless-link-host.nix`](nix/modules/steamless-link-host.nix): NixOS module
 
-See [`server/README.md`](server/README.md) for generic Linux install instructions, protocol notes, security notes, and links to Linux UHID/hidraw/udev/systemd documentation.
+See [`server/README.md`](server/README.md) for Linux installation and protocol notes.
 
 ### NixOS module example
 
@@ -150,11 +149,11 @@ From a flake-based NixOS config:
   outputs = { self, nixpkgs, steamlesslink, ... }: {
     nixosConfigurations.steam-host = nixpkgs.lib.nixosSystem {
       modules = [
-        steamlesslink.nixosModules.steamless-uhid
+        steamlesslink.nixosModules.steamless-link-host
         ({ pkgs, ... }: {
-          services.steamless-uhid = {
+          services.steamless-link-host = {
             enable = true;
-            package = steamlesslink.packages.${pkgs.system}.steamless-uhid-server;
+            package = steamlesslink.packages.${pkgs.system}.steamless-link-host;
             user = "steam";          # the user that runs Steam
             listenHost = "0.0.0.0";  # or use 127.0.0.1 with iroh.enable
             listenPort = 3244;
@@ -162,7 +161,7 @@ From a flake-based NixOS config:
 
             iroh = {
               enable = true;
-              package = steamlesslink.packages.${pkgs.system}.steamless-uhid-iroh-proxy;
+              package = steamlesslink.packages.${pkgs.system}.steamless-link-iroh-proxy;
             };
           };
         })
@@ -177,10 +176,10 @@ The current protocol is unauthenticated raw TCP. Bind it only to trusted network
 ### Linux controller client
 
 To forward a local Triton controller from one NixOS machine to another Steam
-host, import `nixosModules.steamless-hidraw-client` and enable:
+host, import `nixosModules.steamless-link-controller` and enable:
 
 ```nix
-services.steamless-hidraw-client = {
+services.steamless-link-controller = {
   enable = true;
   host = "steam-host";
 };
@@ -190,11 +189,11 @@ Capture is enabled by default: it temporarily rebinds the matching controller,
 so local Steam loses access while the remote bridge runs. Toggle it at runtime:
 
 ```sh
-systemctl stop steamless-hidraw-capture.service   # return it to local Steam
-systemctl start steamless-hidraw-capture.service  # forward it remotely
+systemctl stop steamless-link-controller-capture.service   # return it to Steam
+systemctl start steamless-link-controller-capture.service  # forward remotely
 ```
 
-`homeModules.steamless-hidraw-client` provides the same unprivileged bridge as
+`homeModules.steamless-link-controller` provides the same unprivileged bridge as
 a user service when the desktop user already owns the hidraw device; it cannot
 capture a controller from local Steam.
 
@@ -208,16 +207,16 @@ The app will:
 - discover Valve service `100f6c32-1735-4313-b402-38567131e5f3`
 - enable notifications for Valve report characteristics `100f6c75` through `100f6c7a`
 - reconstruct missing BLE report IDs from the characteristic UUID (`100f6c7a` -> `0x45`)
-- forward numbered `0x45` Triton BLE input reports to the UHID bridge
+- forward numbered `0x45` Triton BLE input reports to the Steamless Link host
 - proxy Steam feature reports through BLE report characteristic `100f6c34`
 - proxy Steam output reports through BLE output characteristics `100f6cb5` through `100f6cbe`
 
-In raw UHID mode the app does **not** run its own periodic lizard-mode refresh; Steam owns feature/report traffic. In VIIPER fallback mode the app periodically sends lizard-mode-off itself.
+In Steamless Link mode the app does **not** run its own periodic lizard-mode refresh; Steam owns feature/report traffic. In VIIPER fallback mode the app periodically sends lizard-mode-off itself.
 
 Useful logs while developing:
 
 ```sh
-journalctl -u steamless-uhid -n 120 --no-pager
+journalctl -u steamless-link-host -n 120 --no-pager
 tail -160 ~/.local/share/Steam/logs/controller.txt
 adb logcat -d -v time -s ControllerBridge BluetoothGatt AndroidRuntime
 ```

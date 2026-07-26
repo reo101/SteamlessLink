@@ -145,7 +145,7 @@ writeShellApplication {
     ready_deadline=$((SECONDS + 45))
     while [ "$SECONDS" -lt "$ready_deadline" ]; do
       logs="$($ANDROID_HOME/platform-tools/adb -s "$adb_serial" logcat -d -v time -s ControllerBridge AndroidRuntime 2>/dev/null || true)"
-      if printf '%s\n' "$logs" | grep -q 'UHID raw stream open'; then
+      if printf '%s\n' "$logs" | grep -q 'Connected to Steamless Link host'; then
         if [ -n "$ready_file" ]; then printf 'ready\n' > "$ready_file"; fi
         if [ "$hold" = 1 ]; then
           while true; do
@@ -162,7 +162,7 @@ writeShellApplication {
       sleep 1
     done
 
-    echo "error: Android app did not open UHID raw stream" >&2
+    echo "error: Android app did not connect to the Steamless Link host" >&2
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport AndroidRuntime >&2 || true
     exit 1
   '';

@@ -7,7 +7,7 @@
 }:
 
 writeShellApplication {
-  name = "steamless-android-emulator-uhid-vm-test";
+  name = "steamless-android-emulator-link-vm-test";
   runtimeInputs = [
     gradle
     jdk17

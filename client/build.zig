@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "steamless-hidraw-client",
+        .name = "steamless-link-controller",
         .root_module = exe_module,
     });
     b.installArtifact(exe);

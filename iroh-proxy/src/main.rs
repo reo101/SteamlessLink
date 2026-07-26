@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     if args.next().as_deref() == Some("connect") {
         return connect(
             args.next()
-                .context("usage: steamless-uhid-iroh-proxy connect ENDPOINT_TICKET")?,
+                .context("usage: steamless-link-iroh-proxy connect ENDPOINT_TICKET")?,
         )
         .await;
     }
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:3244".to_string())
         .parse::<SocketAddr>()
-        .context("usage: steamless-uhid-iroh-proxy [tcp-host:port]")?;
+        .context("usage: steamless-link-iroh-proxy [tcp-host:port]")?;
     serve(target).await
 }
 

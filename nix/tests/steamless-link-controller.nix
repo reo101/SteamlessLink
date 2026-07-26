@@ -1,10 +1,10 @@
 {
   pkgs,
   lib,
-  steamlessUhidModule,
-  steamlessUhidPackage,
-  steamlessHidrawClientModule,
-  steamlessHidrawClientPackage,
+  steamlessLinkHostModule,
+  steamlessLinkHostPackage,
+  steamlessLinkControllerModule,
+  steamlessLinkControllerPackage,
 }:
 let
   testNetwork = {
@@ -129,9 +129,9 @@ let
   };
 
   verifySteamSide = pkgs.writeTextFile {
-    name = "verify-steamless-remote-hidraw";
+    name = "verify-steamless-link-controller";
     executable = true;
-    destination = "/bin/verify-steamless-remote-hidraw";
+    destination = "/bin/verify-steamless-link-controller";
     text = /* python */ ''
       #!${lib.getExe pkgs.python3}
       """Runs on the steam node against the server-created virtual controller:
@@ -197,7 +197,7 @@ let
     };
 in
 {
-  name = "steamless-hidraw-client";
+  name = "steamless-link-controller";
 
   nodes = {
     steam =
@@ -205,7 +205,7 @@ in
       {
         imports = [
           (baseNode testNetwork.steam)
-          steamlessUhidModule
+          steamlessLinkHostModule
         ];
 
         users.groups.steam = { };
@@ -215,9 +215,9 @@ in
           extraGroups = [ "input" ];
         };
 
-        services.steamless-uhid = {
+        services.steamless-link-host = {
           enable = true;
-          package = steamlessUhidPackage;
+          package = steamlessLinkHostPackage;
           listenHost = uhidServer.listenHost;
           listenPort = uhidServer.listenPort;
           logLevel = uhidServer.logLevel;
@@ -230,14 +230,14 @@ in
       {
         imports = [
           (baseNode testNetwork.handheld)
-          steamlessHidrawClientModule
+          steamlessLinkControllerModule
         ];
 
         boot.kernelModules = [ "uhid" ];
 
-        services.steamless-hidraw-client = {
+        services.steamless-link-controller = {
           enable = true;
-          package = steamlessHidrawClientPackage;
+          package = steamlessLinkControllerPackage;
           host = testNetwork.steam.hostName;
           port = uhidServer.listenPort;
           reconnectMs = 50;
@@ -259,33 +259,33 @@ in
   testScript = /* python */ ''
     start_all()
 
-    steam.wait_for_unit("steamless-uhid.service")
-    steam.wait_until_succeeds("journalctl -u steamless-uhid --no-pager | grep -q 'listening on ${uhidServer.listenHost}:${toString uhidServer.listenPort}'")
+    steam.wait_for_unit("steamless-link-host.service")
+    steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'listening on ${uhidServer.listenHost}:${toString uhidServer.listenPort}'")
 
     handheld.wait_for_unit("multi-user.target")
     handheld.wait_for_unit("fake-controller.service")
     handheld.wait_until_succeeds("test -e ${fakeController.readyPath}")
     handheld.wait_until_succeeds("ls -d ${fakeController.hidDeviceGlob}")
 
-    handheld.wait_for_unit("steamless-hidraw-capture.service")
-    handheld.wait_for_unit("steamless-hidraw-client.service")
+    handheld.wait_for_unit("steamless-link-controller-capture.service")
+    handheld.wait_for_unit("steamless-link-controller.service")
 
     # Diagnostics: show flag state and how udev evaluated the hidraw node.
     print(handheld.succeed(
         "ls -l /dev/hidraw*; "
-        "test -e /run/steamless-hidraw/capture && echo FLAG-PRESENT || echo FLAG-MISSING; "
+        "test -e /run/steamless-link-controller/capture && echo FLAG-PRESENT || echo FLAG-MISSING; "
         "dev=$(ls ${fakeController.hidDeviceGlob}/hidraw/ | head -n1); "
         "udevadm test --action=add /sys/class/hidraw/$dev 2>&1 | grep -Ei 'steamless|GROUP|MODE|uaccess' || true"
     ))
 
     # While capture is active, the hidraw node belongs to the daemon's group
     # and is unreadable for ordinary (Steam-running) users.
-    handheld.wait_until_succeeds("${handheldHidrawStat} | grep -q '^root steamless-hidraw 660$'")
+    handheld.wait_until_succeeds("${handheldHidrawStat} | grep -q '^root steamless-link-input 660$'")
 
     # The bridge should produce a virtual controller on the steam node.
     steam.wait_until_succeeds("ls ${steamHidDeviceGlob} >/dev/null")
-    steam.wait_until_succeeds("journalctl -u steamless-uhid --no-pager | grep -q 'input reports='")
-    steam.succeed("${lib.getExe' verifySteamSide "verify-steamless-remote-hidraw"}")
+    steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'input reports='")
+    steam.succeed("${lib.getExe' verifySteamSide "verify-steamless-link-controller"}")
 
     # Output and feature-set reports written on the steam node must reach the
     # fake device.
@@ -295,14 +295,14 @@ in
     # Dynamic handoff: stopping capture returns the controller to local
     # consumers (default root-only perms here; uaccess in real setups) and
     # tears down the remote virtual controller.
-    handheld.succeed("systemctl stop steamless-hidraw-capture.service")
+    handheld.succeed("systemctl stop steamless-link-controller-capture.service")
     handheld.wait_until_succeeds("${handheldHidrawStat} | grep -q '^root root 600$'")
     steam.wait_until_fails("ls ${steamHidDeviceGlob} >/dev/null")
 
     # Re-enabling capture steals it back and the bridge recovers on its own.
-    handheld.succeed("systemctl start steamless-hidraw-capture.service")
-    handheld.wait_until_succeeds("${handheldHidrawStat} | grep -q '^root steamless-hidraw 660$'")
+    handheld.succeed("systemctl start steamless-link-controller-capture.service")
+    handheld.wait_until_succeeds("${handheldHidrawStat} | grep -q '^root steamless-link-input 660$'")
     steam.wait_until_succeeds("ls ${steamHidDeviceGlob} >/dev/null")
-    steam.succeed("${lib.getExe' verifySteamSide "verify-steamless-remote-hidraw"}")
+    steam.succeed("${lib.getExe' verifySteamSide "verify-steamless-link-controller"}")
   '';
 }

@@ -1,8 +1,8 @@
 {
   pkgs,
   lib,
-  steamlessUhidModule,
-  steamlessUhidPackage,
+  steamlessLinkHostModule,
+  steamlessLinkHostPackage,
 }:
 let
   testNetwork = {
@@ -142,9 +142,9 @@ let
   };
 
   verifySteamlessHidraw = pkgs.writeTextFile {
-    name = "verify-steamless-hidraw";
+    name = "verify-steamless-link-host";
     executable = true;
-    destination = "/bin/verify-steamless-hidraw";
+    destination = "/bin/verify-steamless-link-host";
     text = /* python */ ''
       #!${lib.getExe pkgs.python3}
       import glob, os, pathlib, select, time
@@ -202,7 +202,7 @@ let
     };
 in
 {
-  name = "steamless-uhid";
+  name = "steamless-link-host";
 
   nodes = {
     steam =
@@ -210,7 +210,7 @@ in
       {
         imports = [
           (baseNode testNetwork.steam)
-          steamlessUhidModule
+          steamlessLinkHostModule
         ];
 
         users.groups.steam = { };
@@ -220,9 +220,9 @@ in
           extraGroups = [ "input" ];
         };
 
-        services.steamless-uhid = {
+        services.steamless-link-host = {
           enable = true;
-          package = steamlessUhidPackage;
+          package = steamlessLinkHostPackage;
           listenHost = uhidServer.listenHost;
           listenPort = uhidServer.listenPort;
           logLevel = uhidServer.logLevel;
@@ -239,8 +239,8 @@ in
     start_all()
 
     steam.wait_for_unit("multi-user.target")
-    steam.wait_for_unit("steamless-uhid.service")
-    steam.wait_until_succeeds("journalctl -u steamless-uhid --no-pager | grep -q 'listening on ${uhidServer.listenHost}:${toString uhidServer.listenPort}'")
+    steam.wait_for_unit("steamless-link-host.service")
+    steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'listening on ${uhidServer.listenHost}:${toString uhidServer.listenPort}'")
 
     phone.wait_for_unit("multi-user.target")
     phone.succeed("${lib.getExe steamlessPhoneClient} > ${phoneClientConfig.logPath} 2>&1 &")
@@ -252,7 +252,7 @@ in
     phone.wait_until_succeeds("test -e ${phoneClientConfig.donePath} -o -e ${phoneClientConfig.failedPath}")
     phone.succeed("test -e ${phoneClientConfig.donePath}")
     phone.succeed("grep -q '${steamController.outputReportHex}' ${phoneClientConfig.outputFramePath}")
-    steam.wait_until_succeeds("journalctl -u steamless-uhid --no-pager | grep -q 'input reports='")
-    steam.succeed("journalctl -u steamless-uhid --no-pager | grep -q 'UHID output'")
+    steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'input reports='")
+    steam.succeed("journalctl -u steamless-link-host --no-pager | grep -q 'UHID output'")
   '';
 }

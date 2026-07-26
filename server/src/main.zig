@@ -155,7 +155,7 @@ fn parseArgs(argv: []const []const u8) !Config {
 
 fn printUsage() void {
     std.debug.print(
-        \\Usage: steamless-uhid-server [options]
+        \\Usage: steamless-link-host [options]
         \\
         \\Options:
         \\  --listen-host HOST   address to bind, default 127.0.0.1

@@ -1,14 +1,14 @@
 # Modular service (https://nixos.org/manual/nixos/unstable/#modular-services)
-# for steamless-hidraw-client. Instantiate via:
+# for the Steamless Link controller bridge. Instantiate via:
 #
-#   system.services.steamless-hidraw-client = {
-#     imports = [ pkgs.steamless-hidraw-client.services.default ];
-#     steamless-hidraw-client.host = "jeeves.example.net";
+#   system.services.steamless-link-controller = {
+#     imports = [ pkgs.steamless-link-controller.services.default ];
+#     steamless-link-controller.host = "jeeves.example.net";
 #   };
 #
 # The daemon is unprivileged: DynamicUser plus a supplementary group that is
 # granted access to the captured hidraw node by the host's udev rules (see
-# nix/modules/steamless-hidraw-client.nix for the privileged capture side).
+# nix/modules/steamless-link-controller.nix for privileged capture).
 {
   config,
   options,
@@ -16,16 +16,16 @@
   ...
 }:
 let
-  cfg = config.steamless-hidraw-client;
+  cfg = config.steamless-link-controller;
   hex = value: "0x${lib.toHexString value}";
 in
 {
   _class = "service";
 
-  options.steamless-hidraw-client = {
+  options.steamless-link-controller = {
     package = lib.mkOption {
       type = lib.types.package;
-      description = "Package providing the steamless-hidraw-client executable.";
+      description = "Package providing the steamless-link-controller executable.";
     };
 
     device = lib.mkOption {
@@ -50,13 +50,13 @@ in
     host = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1";
-      description = "steamless-uhid-server (or iroh proxy) address to connect to.";
+      description = "Steamless Link host (or Iroh proxy) address to connect to.";
     };
 
     port = lib.mkOption {
       type = lib.types.port;
       default = 3244;
-      description = "steamless-uhid-server TCP port.";
+      description = "Steamless Link host TCP port.";
     };
 
     reconnectMs = lib.mkOption {
@@ -74,12 +74,12 @@ in
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Extra command-line arguments passed to steamless-hidraw-client.";
+      description = "Extra command-line arguments passed to steamless-link-controller.";
     };
 
     deviceGroup = lib.mkOption {
       type = lib.types.str;
-      default = "steamless-hidraw";
+      default = "steamless-link-input";
       description = ''
         Supplementary group granting access to the captured hidraw node.
         Must match the group used by the host's udev capture rules.

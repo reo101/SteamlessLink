@@ -1,5 +1,5 @@
-//! steamless-hidraw-client: bridges a local hidraw controller to a remote
-//! steamless-uhid-server over the raw framed protocol.
+//! steamless-link-controller: bridges a local hidraw controller to a
+//! Steamless Link host over the raw framed protocol.
 //!
 //! Input reports read from /dev/hidrawN are forwarded as FRAME_INPUT.
 //! Server-originated FRAME_OUTPUT / FRAME_GET_REPORT / FRAME_SET_REPORT are
@@ -95,7 +95,7 @@ fn parseArgs(argv: []const []const u8) !Config {
 
 fn printUsage() void {
     std.debug.print(
-        \\Usage: steamless-hidraw-client [options]
+        \\Usage: steamless-link-controller [options]
         \\
         \\Options:
         \\  --device PATH        hidraw device, e.g. /dev/hidraw3

@@ -56,7 +56,8 @@ class ControllerBridgeService : Service() {
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
         val irohTicket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
         val target = if (mode == MODE_UHID_RAW_IROH) "Iroh ticket" else "$host:$port"
-        startForeground(NOTIFICATION_ID, notification("Starting $transport/$mode bridge to $target"))
+        val modeLabel = if (mode == MODE_UHID_RAW_IROH) "Steamless Link Iroh" else if (mode == MODE_UHID_RAW) "Steamless Link" else mode
+        startForeground(NOTIFICATION_ID, notification("Starting $transport/$modeLabel bridge to $target"))
         if (mode == MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
             status("Iroh endpoint ticket is required")
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -93,10 +94,10 @@ class ControllerBridgeService : Service() {
                 if (!awaitCaptureReady(generation)) return@runCatching
                 if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH) {
                     val connection = if (mode == MODE_UHID_RAW_IROH) {
-                        status("Connecting to Steamless UHID raw bridge over Iroh")
+                        status("Connecting to Steamless Link host over Iroh")
                         irohRawUhidConnection(this@ControllerBridgeService, irohTicket, onStatus = ::status)
                     } else {
-                        status("Connecting to Steamless UHID raw bridge at $host:$port")
+                        status("Connecting to Steamless Link host at $host:$port")
                         null
                     }
                     val raw = if (connection != null) {
@@ -123,7 +124,7 @@ class ControllerBridgeService : Service() {
                     }
                     rawClientRef.set(raw)
                     synchronized(closeables) { closeables.add(raw) }
-                    status("Connected to UHID raw bridge; forwarding Triton reports")
+                    status("Connected to Steamless Link host; forwarding Triton reports")
                     return@runCatching
                 }
 
@@ -167,7 +168,7 @@ class ControllerBridgeService : Service() {
                 status("Connected to VIIPER stream; forwarding reports")
             }.onFailure { error ->
                 val target = when (mode) {
-                    MODE_UHID_RAW, MODE_UHID_RAW_IROH -> "UHID raw"
+                    MODE_UHID_RAW, MODE_UHID_RAW_IROH -> "Steamless Link"
                     MODE_LOCAL_UINPUT_XBOX360 -> "local uinput"
                     else -> "VIIPER"
                 }
@@ -265,11 +266,11 @@ class ControllerBridgeService : Service() {
             runCatching {
                 if (!rawClient.sendInputReport(triton.rawReport, triton.rawReport.size)) {
                     rawClientRef.compareAndSet(rawClient, null)
-                    status("UHID raw stream is closed")
+                    status("Steamless Link stream is closed")
                 }
             }.onFailure { error ->
                 rawClientRef.compareAndSet(rawClient, null)
-                status("UHID raw stream write failed: ${error.message ?: error::class.java.simpleName}")
+                status("Steamless Link stream write failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "UHID raw stream write failed", error)
             }
             return
@@ -479,13 +480,17 @@ class ControllerBridgeService : Service() {
             "Bound process networking",
             "Cleared process network binding",
             "Dropped queued BLE output reports",
-            "Dropped queued UHID input reports",
+            "Dropped queued Steamless Link input reports",
             "Enabling BLE notifications for",
             "Ignoring BLE report",
             "Triton reports:",
             "UHID get-report",
             "UHID output report",
             "UHID set-report",
+            "Steamless Link frame",
+            "Steamless Link get-report",
+            "Steamless Link output report",
+            "Steamless Link set-report",
             "Valve char",
         )
         private const val TAG = "ControllerBridge"

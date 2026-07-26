@@ -5,7 +5,7 @@
 }:
 
 stdenv.mkDerivation (finalAttrs: {
-  pname = "steamless-hidraw-client";
+  pname = "steamless-link-controller";
   version = "0.1.0";
 
   # The client depends on ../core as a Zig path dependency, so the source
@@ -58,19 +58,19 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 zig-out/bin/steamless-hidraw-client $out/bin/steamless-hidraw-client
+    install -Dm755 zig-out/bin/steamless-link-controller $out/bin/steamless-link-controller
 
     runHook postInstall
   '';
 
   passthru.services.default = {
     imports = [ ./service.nix ];
-    steamless-hidraw-client.package = lib.mkDefault finalAttrs.finalPackage;
+    steamless-link-controller.package = lib.mkDefault finalAttrs.finalPackage;
   };
 
   meta = {
-    description = "SteamlessLink Linux hidraw-to-network controller bridge";
-    mainProgram = "steamless-hidraw-client";
+    description = "Steamless Link Linux controller bridge";
+    mainProgram = "steamless-link-controller";
     platforms = lib.platforms.linux;
   };
 })

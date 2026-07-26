@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "steamless-uhid-server",
+        .name = "steamless-link-host",
         .root_module = root_module,
     });
     b.installArtifact(exe);

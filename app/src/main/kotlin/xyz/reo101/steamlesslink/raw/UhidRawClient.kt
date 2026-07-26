@@ -42,11 +42,11 @@ class UhidRawClient(
     private val closed = AtomicBoolean(false)
     private val inputQueueLock = Object()
     private val queuedInputReports = ArrayDeque<ByteArray>()
-    private val writer = Thread(::writeLoop, "steamless-uhid-raw-writer").apply {
+    private val writer = Thread(::writeLoop, "steamless-link-writer").apply {
         isDaemon = true
         start()
     }
-    private val reader = Thread(::readLoop, "steamless-uhid-raw-reader").apply {
+    private val reader = Thread(::readLoop, "steamless-link-reader").apply {
         isDaemon = true
         start()
     }
@@ -87,7 +87,7 @@ class UhidRawClient(
 
             runCatching { sendFrame(FRAME_INPUT, payload) }
                 .onFailure { error ->
-                    if (!closed.get()) onStatus("UHID raw writer stopped: ${error.message ?: error::class.java.simpleName}")
+                    if (!closed.get()) onStatus("Steamless Link writer stopped: ${error.message ?: error::class.java.simpleName}")
                     close()
                     return
                 }
@@ -99,7 +99,7 @@ class UhidRawClient(
         val now = System.currentTimeMillis()
         if (now - lastInputDropStatusAtMs >= INPUT_DROP_STATUS_INTERVAL_MS) {
             lastInputDropStatusAtMs = now
-            onStatus("Dropped queued UHID input reports: count=$droppedInputReports")
+            onStatus("Dropped queued Steamless Link input reports: count=$droppedInputReports")
         }
     }
 
@@ -114,11 +114,11 @@ class UhidRawClient(
                     FRAME_OUTPUT -> handleOutputReport(payload)
                     FRAME_GET_REPORT -> handleGetReport(payload)
                     FRAME_SET_REPORT -> handleSetReport(payload)
-                    else -> onStatus("UHID frame type=0x%02x len=$length".format(type))
+                    else -> onStatus("Steamless Link frame type=0x%02x len=$length".format(type))
                 }
             }
         }.onFailure { error ->
-            if (!closed.get()) onStatus("UHID raw reader stopped: ${error.message ?: error::class.java.simpleName}")
+            if (!closed.get()) onStatus("Steamless Link reader stopped: ${error.message ?: error::class.java.simpleName}")
         }
     }
 
@@ -126,9 +126,9 @@ class UhidRawClient(
         if (payload.isEmpty()) return
         val reportType = payload.u8(0)
         val data = payload.copyOfRange(1, payload.size)
-        logControl("UHID output report rtype=$reportType len=${data.size} head=${data.hex(8)}")
+        logControl("Steamless Link output report rtype=$reportType len=${data.size} head=${data.hex(8)}")
         val ok = runCatching { onOutputReport(reportType, data) }.getOrDefault(false)
-        if (!ok) logControl("UHID output report write failed rtype=$reportType len=${data.size}")
+        if (!ok) logControl("Steamless Link output report write failed rtype=$reportType len=${data.size}")
     }
 
     private fun handleGetReport(payload: ByteArray) {
@@ -136,7 +136,7 @@ class UhidRawClient(
         val requestId = payload.i32Le(0)
         val reportNumber = payload.u8(4)
         val reportType = payload.u8(5)
-        logControl("UHID get-report id=$requestId rnum=0x%02x rtype=$reportType".format(reportNumber))
+        logControl("Steamless Link get-report id=$requestId rnum=0x%02x rtype=$reportType".format(reportNumber))
         val report = runCatching { onGetReport(requestId, reportNumber, reportType) }.getOrNull()
         val err = if (report == null) 5 else 0
         val data = report ?: ByteArray(0)
@@ -153,7 +153,7 @@ class UhidRawClient(
         val reportNumber = payload.u8(4)
         val reportType = payload.u8(5)
         val data = payload.copyOfRange(6, payload.size)
-        logControl("UHID set-report id=$requestId rnum=0x%02x rtype=$reportType len=${data.size} head=${data.hex(8)}".format(reportNumber))
+        logControl("Steamless Link set-report id=$requestId rnum=0x%02x rtype=$reportType len=${data.size} head=${data.hex(8)}".format(reportNumber))
         val ok = runCatching { onSetReport(requestId, reportNumber, reportType, data) }.getOrDefault(false)
         sendFrame(FRAME_SET_REPORT_REPLY, ByteArray(6).also { out ->
             out.putI32Le(0, requestId)

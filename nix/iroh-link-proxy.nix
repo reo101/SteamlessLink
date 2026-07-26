@@ -5,7 +5,7 @@
 let
   src = craneLib.cleanCargoSource ../iroh-proxy;
   commonArgs = {
-    pname = "steamless-uhid-iroh-proxy";
+    pname = "steamless-link-iroh-proxy";
     version = "0.1.0";
     inherit src;
     strictDeps = true;
@@ -20,8 +20,8 @@ craneLib.buildPackage (commonArgs // {
   inherit cargoArtifacts;
 
   meta = {
-    description = "Iroh endpoint-ticket proxy for the SteamlessLink UHID TCP bridge";
+    description = "Iroh endpoint-ticket proxy for a Steamless Link host";
     license = lib.licenses.mit;
-    mainProgram = "steamless-uhid-iroh-proxy";
+    mainProgram = "steamless-link-iroh-proxy";
   };
 })

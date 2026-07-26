@@ -74,7 +74,7 @@ class MainActivity : Activity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "Default: BLE/USB Steam Controller/Triton -> raw UHID bridge. VIIPER xbox360 fallback and local uinput Xbox modes available."
+            text = "Default: BLE/USB Steam Controller/Triton -> Steamless Link host. VIIPER Xbox fallback and local Xbox modes are available."
             textSize = 14f
         })
 
@@ -86,7 +86,7 @@ class MainActivity : Activity() {
         root.addView(hostInput)
 
         portInput = EditText(this).apply {
-            hint = "Bridge port (raw: $DEFAULT_RAW_UHID_PORT, VIIPER: $DEFAULT_VIIPER_PORT)"
+            hint = "Bridge port (Steamless Link: $DEFAULT_RAW_UHID_PORT, VIIPER: $DEFAULT_VIIPER_PORT)"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setSingleLine(true)
             setText(prefs.getInt(PREF_PORT, DEFAULT_RAW_UHID_PORT).toString())
@@ -94,14 +94,14 @@ class MainActivity : Activity() {
         root.addView(portInput)
 
         irohTicketInput = EditText(this).apply {
-            hint = "Iroh endpoint ticket (Raw Iroh only)"
+            hint = "Iroh endpoint ticket (Steamless Link Iroh only)"
             setSingleLine(true)
             setText(prefs.getString(PREF_IROH_TICKET, ""))
         }
         root.addView(irohTicketInput)
 
         keyInput = EditText(this).apply {
-            hint = "VIIPER key (unused for UHID raw)"
+            hint = "VIIPER key (unused for Steamless Link)"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             setSingleLine(true)
             setText(prefs.getString(PREF_KEY, ""))
@@ -279,7 +279,7 @@ class MainActivity : Activity() {
             appendLine()
             appendLine("Use the connection method dropdown and BLE/USB transport toggle, then tap Start.")
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
-            appendLine("Tip: raw UHID mode should point at a Steamless UHID bridge and should show up to Steam as a Valve HID device. Raw Iroh uses an endpoint ticket instead of host:port. Xbox fallback points at a VIIPER server.")
+            appendLine("Tip: Steamless Link should point at a Steamless Link host and appears to Steam as a Valve HID device. Steamless Link Iroh uses an endpoint ticket instead of host:port. Xbox fallback points at a VIIPER server.")
             appendLine("Local Xbox mode creates a virtual Android gamepad through Shizuku shell or su/root; build the APK with -Psteamless.buildUinputHelper=true.")
             appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
         }
@@ -331,9 +331,9 @@ class MainActivity : Activity() {
     private fun updateInputAvailability() {
         val mode = selectedMode()
         val usesHostPort = mode == ControllerBridgeService.MODE_UHID_RAW || mode == ControllerBridgeService.MODE_VIIPER_XBOX360
-        setInputAvailability(hostInput, usesHostPort, "Bridge host/IP is used by Raw UHID and VIIPER Xbox")
-        setInputAvailability(portInput, usesHostPort, "Bridge port is used by Raw UHID and VIIPER Xbox")
-        setInputAvailability(irohTicketInput, mode == ControllerBridgeService.MODE_UHID_RAW_IROH, "Iroh ticket is used by Raw Iroh")
+        setInputAvailability(hostInput, usesHostPort, "Bridge host/IP is used by Steamless Link and VIIPER Xbox")
+        setInputAvailability(portInput, usesHostPort, "Bridge port is used by Steamless Link and VIIPER Xbox")
+        setInputAvailability(irohTicketInput, mode == ControllerBridgeService.MODE_UHID_RAW_IROH, "Iroh ticket is used by Steamless Link Iroh")
         setInputAvailability(keyInput, mode == ControllerBridgeService.MODE_VIIPER_XBOX360, "VIIPER key is used by VIIPER Xbox")
     }
 
@@ -417,7 +417,7 @@ class MainActivity : Activity() {
         private const val DEFAULT_RAW_UHID_PORT = 3244
         private const val DEFAULT_VIIPER_PORT = 3242
         private const val SHIZUKU_PERMISSION_REQUEST = 200
-        private val MODE_LABELS = arrayOf("Raw UHID", "Raw Iroh", "VIIPER Xbox", "Local Xbox")
+        private val MODE_LABELS = arrayOf("Steamless Link", "Steamless Link Iroh", "VIIPER Xbox", "Local Xbox")
         private val MODE_VALUES = arrayOf(
             ControllerBridgeService.MODE_UHID_RAW,
             ControllerBridgeService.MODE_UHID_RAW_IROH,

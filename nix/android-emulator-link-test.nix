@@ -6,11 +6,11 @@
   jdk17,
   python3,
   steamlessIrohJni,
-  steamlessUhidIrohProxy,
+  steamlessLinkIrohProxy,
 }:
 
 writeShellApplication {
-  name = "steamless-android-emulator-uhid-test";
+  name = "steamless-android-emulator-link-test";
   excludeShellChecks = [ "SC2329" ];
   runtimeInputs = [
     androidSdk
@@ -194,7 +194,7 @@ writeShellApplication {
     if [ "$iroh_mode" = 1 ]; then
       STEAMLESS_IROH_BIND_ADDR="0.0.0.0:$iroh_port" \
         STEAMLESS_IROH_EXTERNAL_ADDR="10.0.2.2:$iroh_port" \
-        ${steamlessUhidIrohProxy}/bin/steamless-uhid-iroh-proxy "127.0.0.1:$host_port" >"$workdir/iroh-ticket" 2>"$workdir/iroh-proxy.log" &
+        ${steamlessLinkIrohProxy}/bin/steamless-link-iroh-proxy "127.0.0.1:$host_port" >"$workdir/iroh-ticket" 2>"$workdir/iroh-proxy.log" &
       proxy_pid=$!
       for _ in $(seq 1 100); do [ -s "$workdir/iroh-ticket" ] && break; sleep 0.1; done
       ticket=$(head -n1 "$workdir/iroh-ticket")

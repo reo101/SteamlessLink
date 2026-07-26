@@ -1,14 +1,14 @@
 {
   pkgs,
   lib,
-  steamlessUhidModule,
-  steamlessUhidPackage,
+  steamlessLinkHostModule,
+  steamlessLinkHostPackage,
   androidEmulatorClient,
   androidSdk,
 }:
 let
   hostForwardPort = 33244;
-  guestUhidPort = 3244;
+  guestHostPort = 3244;
 
   steamController = rec {
     hidBusHex = "0003";
@@ -63,13 +63,13 @@ let
   };
 in
 {
-  name = "steamless-android-emulator-uhid";
+  name = "steamless-android-emulator-link";
   globalTimeout = 10 * 60;
 
   nodes.steam =
     { ... }:
     {
-      imports = [ steamlessUhidModule ];
+      imports = [ steamlessLinkHostModule ];
 
       users.groups.steam = { };
       users.users.steam = {
@@ -84,15 +84,15 @@ in
           proto = "tcp";
           host.address = "127.0.0.1";
           host.port = hostForwardPort;
-          guest.port = guestUhidPort;
+          guest.port = guestHostPort;
         }
       ];
 
-      services.steamless-uhid = {
+      services.steamless-link-host = {
         enable = true;
-        package = steamlessUhidPackage;
+        package = steamlessLinkHostPackage;
         listenHost = "0.0.0.0";
-        listenPort = guestUhidPort;
+        listenPort = guestHostPort;
         logLevel = "debug";
         openFirewall = true;
       };
@@ -118,8 +118,8 @@ in
 
     start_all()
     steam.wait_for_unit("multi-user.target")
-    steam.wait_for_unit("steamless-uhid.service")
-    steam.wait_until_succeeds("journalctl -u steamless-uhid --no-pager | grep -q 'listening on 0.0.0.0:${toString guestUhidPort}'")
+    steam.wait_for_unit("steamless-link-host.service")
+    steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'listening on 0.0.0.0:${toString guestHostPort}'")
 
     env = os.environ.copy()
     env.update({
@@ -147,8 +147,8 @@ in
 
         steam.wait_until_succeeds("ls ${steamController.hidDeviceGlob} >/dev/null", timeout=90)
         steam.succeed("${lib.getExe verifySteamlessHidraw}")
-        steam.wait_until_succeeds("journalctl -u steamless-uhid --no-pager | grep -q 'input reports='")
-        steam.succeed("journalctl -u steamless-uhid --no-pager | grep -q 'UHID output'")
+        steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'input reports='")
+        steam.succeed("journalctl -u steamless-link-host --no-pager | grep -q 'UHID output'")
 
         adb = "${androidSdk}/libexec/android-sdk/platform-tools/adb"
         output_deadline = time.monotonic() + 20

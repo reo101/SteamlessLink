@@ -5,17 +5,17 @@
   ...
 }:
 let
-  cfg = config.services.steamless-uhid;
+  cfg = config.services.steamless-link-host;
 in
 {
-  options.services.steamless-uhid = {
-    enable = lib.mkEnableOption "SteamlessLink raw Triton-to-UHID bridge";
+  options.services.steamless-link-host = {
+    enable = lib.mkEnableOption "Steamless Link host for remote controllers";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.callPackage ../../server/package.nix { };
       defaultText = lib.literalExpression "pkgs.callPackage ./server/package.nix { }";
-      description = "Package providing the steamless-uhid-server executable.";
+      description = "Package providing the steamless-link-host executable.";
     };
 
     user = lib.mkOption {
@@ -45,7 +45,7 @@ in
     listenPort = lib.mkOption {
       type = lib.types.port;
       default = 3244;
-      description = "TCP port for SteamlessLink raw UHID frames.";
+      description = "TCP port for Steamless Link controller frames.";
     };
 
     openFirewall = lib.mkOption {
@@ -69,16 +69,16 @@ in
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Extra command-line arguments passed to steamless-uhid-server.";
+      description = "Extra command-line arguments passed to steamless-link-host.";
     };
 
     iroh = {
-      enable = lib.mkEnableOption "Iroh endpoint-ticket proxy for the raw UHID bridge";
+      enable = lib.mkEnableOption "Iroh endpoint-ticket proxy for the Steamless Link host";
 
       package = lib.mkOption {
         type = lib.types.nullOr lib.types.package;
         default = null;
-        description = "Package providing the steamless-uhid-iroh-proxy executable.";
+        description = "Package providing the steamless-link-iroh-proxy executable.";
       };
 
       targetHost = lib.mkOption {
@@ -90,7 +90,7 @@ in
       targetPort = lib.mkOption {
         type = lib.types.nullOr lib.types.port;
         default = null;
-        description = "TCP port the Iroh proxy forwards to. Defaults to services.steamless-uhid.listenPort.";
+        description = "TCP port the Iroh proxy forwards to. Defaults to services.steamless-link-host.listenPort.";
       };
 
       bindAddr = lib.mkOption {
@@ -113,7 +113,7 @@ in
     assertions = [
       {
         assertion = !cfg.iroh.enable || cfg.iroh.package != null;
-        message = "services.steamless-uhid.iroh.package must be set when services.steamless-uhid.iroh.enable is true.";
+        message = "services.steamless-link-host.iroh.package must be set when services.steamless-link-host.iroh.enable is true.";
       }
     ];
 
@@ -121,15 +121,15 @@ in
 
     environment.systemPackages = [ cfg.package ] ++ lib.optional (cfg.iroh.enable && cfg.iroh.package != null) cfg.iroh.package;
 
-    services.udev.extraRules = lib.mkIf cfg.installUdevRules (builtins.readFile ../../server/60-steamless-uhid.rules);
+    services.udev.extraRules = lib.mkIf cfg.installUdevRules (builtins.readFile ../../server/60-steamless-link-host.rules);
 
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.listenPort ];
 
-    systemd.services.steamless-uhid-iroh-proxy = lib.mkIf (cfg.iroh.enable && cfg.iroh.package != null) {
-      description = "SteamlessLink Iroh proxy for raw UHID";
+    systemd.services.steamless-link-iroh-proxy = lib.mkIf (cfg.iroh.enable && cfg.iroh.package != null) {
+      description = "Steamless Link Iroh proxy";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" "steamless-uhid.service" ];
-      wants = [ "network-online.target" "steamless-uhid.service" ];
+      after = [ "network-online.target" "steamless-link-host.service" ];
+      wants = [ "network-online.target" "steamless-link-host.service" ];
       environment = lib.optionalAttrs (cfg.iroh.bindAddr != null) {
         STEAMLESS_IROH_BIND_ADDR = cfg.iroh.bindAddr;
       } // lib.optionalAttrs (cfg.iroh.externalAddr != null) {
@@ -138,7 +138,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = lib.escapeShellArgs [
-          "${cfg.iroh.package}/bin/steamless-uhid-iroh-proxy"
+          "${cfg.iroh.package}/bin/steamless-link-iroh-proxy"
           "${cfg.iroh.targetHost}:${toString (if cfg.iroh.targetPort == null then cfg.listenPort else cfg.iroh.targetPort)}"
         ];
         User = cfg.user;
@@ -150,15 +150,15 @@ in
       };
     };
 
-    systemd.services.steamless-uhid = {
-      description = "SteamlessLink raw Triton UHID bridge";
+    systemd.services.steamless-link-host = {
+      description = "Steamless Link host";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" "systemd-udevd.service" ];
       serviceConfig = {
         Type = "simple";
         ExecStart = lib.escapeShellArgs (
           [
-            "${cfg.package}/bin/steamless-uhid-server"
+            "${cfg.package}/bin/steamless-link-host"
             "--listen-host"
             cfg.listenHost
             "--listen-port"
