@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use iroh::{Endpoint, EndpointAddr, TransportAddr, endpoint::presets};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
-use tokio::{io as tokio_io, io::AsyncReadExt, net::TcpStream};
+use tokio::{io as tokio_io, net::TcpStream};
 
 const ALPN: &[u8] = b"steamlesslink/uhid-raw/0";
 
