@@ -7,7 +7,9 @@
 #
 #  - a dedicated device group and udev rules that, while capture is active,
 #    hand the controller's hidraw node to that group and strip the uaccess
-#    tag so a locally running Steam cannot (re)open it,
+#    tag so a locally running Steam cannot (re)open it, and that hide the
+#    controller's evdev nodes from the local input stack so lizard-mode
+#    mouse/keyboard reports never reach the local desktop,
 #  - a root helper that toggles capture by touching a flag in /run and
 #    rebinding the HID device (revoking any already-open file descriptors,
 #    including Steam's).
@@ -31,6 +33,10 @@ let
   hidIdPattern = "^HID_ID=[0-9A-F]\\{4\\}:${hex8 cfg.vendorId}:${hex8 cfg.productId}$";
 
   captureFlag = "/run/steamless-link-controller/capture";
+  # sysfs input id attributes are zero-padded lowercase hex (e.g. 28de/1303).
+  hexify = lib.flip lib.pipe [ lib.toHexString (lib.fixedWidthString 4 "0") lib.toLower ];
+  vidHex = hexify cfg.vendorId;
+  pidHex = hexify cfg.productId;
 
   matchHidrawScript = pkgs.writeShellScript "steamless-link-controller-match" ''
     # $1 is the udev devpath of a hidraw device, e.g.
@@ -89,6 +95,15 @@ let
     destination = "/lib/udev/rules.d/72-steamless-link-controller-capture.rules";
     text = ''
       ACTION=="add|change", SUBSYSTEM=="hidraw", TEST=="${captureFlag}", PROGRAM="${matchHidrawScript} %p", OWNER="root", GROUP="${cfg.deviceGroup}", MODE="0660", TAG-="uaccess"
+
+      # While captured, also hide the controller's evdev nodes from the local
+      # input stack: the kernel driver keeps translating reports (lizard-mode
+      # mouse/keyboard, gamepad) into evdev regardless of the hidraw capture,
+      # which would otherwise drive rungen's own cursor. Clearing ID_INPUT_*
+      # and setting LIBINPUT_IGNORE_DEVICE makes libinput skip the nodes; the
+      # capturectl rebind re-runs these rules when the flag toggles, so the
+      # devices come back to local consumers on capture stop.
+      ACTION=="add|change", SUBSYSTEM=="input", TEST=="${captureFlag}", ATTRS{id/vendor}=="${vidHex}", ATTRS{id/product}=="${pidHex}", ENV{ID_INPUT}="", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_JOYSTICK}="", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG-="uaccess"
     '';
   };
 in
