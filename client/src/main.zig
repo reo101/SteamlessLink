@@ -148,6 +148,23 @@ fn runOnce(io: Io, config: *const Config) !void {
     var stream_writer = stream.writer(io, &write_buf);
     var writer_mutex: Io.Mutex = .init;
 
+    var descriptor: [hidraw.MAX_REPORT_DESCRIPTOR_SIZE]u8 = undefined;
+    const device_info = try device.deviceInfo(&descriptor);
+    var device_info_payload: [protocol.DEVICE_INFO_HEADER_SIZE + hidraw.MAX_REPORT_DESCRIPTOR_SIZE]u8 = undefined;
+    const encoded_device_info = protocol.encodeDeviceInfo(.{
+        .bus = device_info.bus,
+        .vendor = device_info.vendor,
+        .product = device_info.product,
+        .descriptor = descriptor[0..device_info.descriptor_len],
+    }, &device_info_payload) orelse return error.InvalidDeviceInfo;
+    try protocol.sendFrame(&stream_writer.interface, protocol.FRAME_DEVICE_INFO, encoded_device_info);
+    config.log(.info, "sent device info bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}", .{
+        device_info.bus,
+        device_info.vendor,
+        device_info.product,
+        device_info.descriptor_len,
+    });
+
     var bridge = Bridge{
         .io = io,
         .config = config,

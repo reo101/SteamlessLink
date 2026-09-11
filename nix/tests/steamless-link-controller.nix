@@ -26,8 +26,8 @@ let
     logLevel = "debug";
   };
 
-  # The fake controller on the handheld appears on the Bluetooth bus (0005);
-  # the server-created virtual device on the steam node uses USB (0003).
+  # The fake controller on the handheld appears on the Bluetooth bus (0005),
+  # which the controller forwards unchanged to the server-created device.
   fakeController = {
     hidDeviceGlob = "/sys/bus/hid/devices/0005:28DE:1303.*";
     outputPath = "/tmp/fake-controller-output";
@@ -36,7 +36,8 @@ let
     featureByte = "0x5a";
   };
 
-  steamHidDeviceGlob = "/sys/bus/hid/devices/0003:28DE:1303.*/hidraw/hidraw*";
+  steamHidDeviceGlob = "/sys/bus/hid/devices/0005:28DE:1303.*/hidraw/hidraw*";
+  steamMouseEventGlob = "/sys/bus/hid/devices/0005:28DE:1303.*/input/input*/event*";
 
   handheldHidrawStat = pkgs.writeShellScript "handheld-hidraw-stat" ''
     dev=$(ls ${fakeController.hidDeviceGlob}/hidraw/ | head -n1)
@@ -75,7 +76,16 @@ let
           return bytes([0x85, report_id, 0x09, 0x01, 0x15, 0x00, 0x26, 0xff, 0x00,
                         0x75, 0x08, 0x95, count, main_item, 0x02])
 
-      rd = (bytes([0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01])
+      mouse_rd = bytes([
+          0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x85, 0x40, 0x09, 0x01, 0xa1, 0x00,
+          0x05, 0x09, 0x19, 0x01, 0x29, 0x02, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+          0x95, 0x02, 0x81, 0x02, 0x75, 0x06, 0x95, 0x01, 0x81, 0x01,
+          0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08,
+          0x95, 0x02, 0x81, 0x06, 0x95, 0x01, 0x09, 0x38, 0x81, 0x06,
+          0x05, 0x0c, 0x0a, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, 0xc0, 0xc0,
+      ])
+      rd = (mouse_rd
+            + bytes([0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01])
             + vendor_report(0x45, 0x81, 45)    # input, 45 bytes
             + vendor_report(0x80, 0x91, 63)    # output
             + vendor_report(0x01, 0xb1, 63)    # feature
@@ -93,6 +103,7 @@ let
       READY_PATH.write_text('ready\n')
 
       input_report = bytes([0x45]) + bytes(range(1, 46))
+      mouse_report = bytes([0x40, 0, 1, 0, 0, 0])
       running = False
       next_input = time.monotonic()
       while True:
@@ -122,6 +133,8 @@ let
               try:
                   write_event(fd, struct.pack('<IH', UHID_INPUT2, len(input_report))
                               + input_report)
+                  write_event(fd, struct.pack('<IH', UHID_INPUT2, len(mouse_report))
+                              + mouse_report)
               except OSError:
                   pass
               next_input = time.monotonic() + 0.004
@@ -137,7 +150,7 @@ let
       """Runs on the steam node against the server-created virtual controller:
       reads a forwarded 0x45 input report and round-trips output, GET_REPORT,
       and SET_REPORT traffic to the fake device."""
-      import fcntl, glob, os, select, time
+      import fcntl, glob, os, select, struct, time
 
       FEATURE_BYTE = ${fakeController.featureByte}
 
@@ -151,12 +164,29 @@ let
           while time.monotonic() < deadline:
               ready, _, _ = select.select([fd], [], [], 0.25)
               if ready:
-                  report = os.read(fd, 64)
-                  if report:
+                  candidate = os.read(fd, 64)
+                  if candidate and candidate[0] == 0x45:
+                      report = candidate
                       break
           assert report, 'timed out reading forwarded input report'
-          assert report[0] == 0x45, report.hex()
           assert len(report) == 46, len(report)
+
+          mouse_events = glob.glob('${steamMouseEventGlob}')
+          assert mouse_events, 'virtual mouse event node not found'
+          mouse_fd = os.open('/dev/input/' + os.path.basename(mouse_events[0]), os.O_RDONLY | os.O_NONBLOCK)
+          try:
+              deadline = time.monotonic() + 5
+              while time.monotonic() < deadline:
+                  ready, _, _ = select.select([mouse_fd], [], [], 0.25)
+                  if not ready:
+                      continue
+                  _sec, _usec, event_type, code, value = struct.unpack('llHHi', os.read(mouse_fd, 24))
+                  if event_type == 2 and code == 0 and value == 1:
+                      break
+              else:
+                  raise AssertionError('timed out reading forwarded relative mouse input')
+          finally:
+              os.close(mouse_fd)
 
           os.write(fd, bytes([0x80, 1, 2, 3, 4]))
 

@@ -29,10 +29,19 @@ const TRITON_BLE_PID: u32 = 0x1303;
 const FRAME_INPUT: u8 = 0x01;
 const FRAME_GET_REPORT_REPLY: u8 = 0x02;
 const FRAME_SET_REPORT_REPLY: u8 = 0x03;
+const FRAME_DEVICE_INFO: u8 = 0x04;
 const FRAME_OUTPUT: u8 = 0x81;
 const FRAME_GET_REPORT: u8 = 0x82;
 const FRAME_SET_REPORT: u8 = 0x83;
 const MAX_FRAME_PAYLOAD = 65535;
+const DEVICE_INFO_HEADER_SIZE = 10;
+
+const DeviceInfo = struct {
+    bus: u32,
+    vendor: u16,
+    product: u16,
+    descriptor: []const u8,
+};
 
 const REPORT_DESCRIPTOR_SIZE = 7 + 18 * 15 + 1;
 
@@ -267,7 +276,23 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
     _ = c.setsockopt(conn_fd, c.IPPROTO_TCP, c.TCP_NODELAY, &one, @sizeOf(c_int));
     log(config, .info, "client connected fd={d}", .{conn_fd});
 
-    var dev = try UhidDevice.open(config);
+    var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
+    var pending_frame: ?Frame = (try readFrame(conn_fd, &payload_buf)) orelse return;
+    var device_info: ?DeviceInfo = null;
+    if (pending_frame.?.frame_type == FRAME_DEVICE_INFO) {
+        const info = decodeDeviceInfo(pending_frame.?.payload) orelse {
+            log(config, .warning, "invalid device-info frame", .{});
+            return;
+        };
+        if (info.bus > std.math.maxInt(u16)) {
+            log(config, .warning, "unsupported HID bus 0x{x}", .{info.bus});
+            return;
+        }
+        device_info = info;
+        pending_frame = null;
+    }
+
+    var dev = try UhidDevice.open(config, device_info);
     defer dev.destroy();
 
     var stop = AtomicBool.init(false);
@@ -288,14 +313,17 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
     }
 
     var last_log_ns: i128 = 0;
-    var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
-
     while (!stop.load(.acquire)) {
-        const maybe_frame = readFrame(conn_fd, &payload_buf) catch |err| {
-            log(config, .warning, "client frame read failed: {s}", .{@errorName(err)});
-            break;
+        const frame = if (pending_frame) |value| blk: {
+            pending_frame = null;
+            break :blk value;
+        } else blk: {
+            const maybe_frame = readFrame(conn_fd, &payload_buf) catch |err| {
+                log(config, .warning, "client frame read failed: {s}", .{@errorName(err)});
+                break;
+            };
+            break :blk maybe_frame orelse break;
         };
-        const frame = maybe_frame orelse break;
         switch (frame.frame_type) {
             FRAME_INPUT => {
                 reports += 1;
@@ -325,6 +353,7 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
                 const err = readU16Le(frame.payload, 4);
                 try dev.setReportReply(request_id, err);
             },
+            FRAME_DEVICE_INFO => log(config, .warning, "ignoring late device-info frame", .{}),
             else => log(config, .debug, "ignoring client frame type=0x{x:0>2} len={d}", .{ frame.frame_type, frame.payload.len }),
         }
     }
@@ -438,36 +467,45 @@ const UhidDevice = struct {
     identity: UhidIdentity,
     destroyed: bool = false,
 
-    fn open(config: *const Config) !UhidDevice {
+    fn open(config: *const Config, device_info: ?DeviceInfo) !UhidDevice {
+        var identity = config.identity;
+        var default_descriptor = vendorReportDescriptor();
+        const descriptor = if (device_info) |info| blk: {
+            identity.bus = @intCast(info.bus);
+            identity.vendor = info.vendor;
+            identity.product = info.product;
+            break :blk info.descriptor;
+        } else &default_descriptor;
+
         const path_z = try std.heap.page_allocator.dupeZ(u8, config.uhid_path);
         defer std.heap.page_allocator.free(path_z);
         const fd = c.open(path_z.ptr, c.O_RDWR | c.O_CLOEXEC);
         if (std.c.errno(fd) != .SUCCESS) return error.UhidOpenFailed;
-        var dev = UhidDevice{ .fd = fd, .identity = config.identity };
+        var dev = UhidDevice{ .fd = fd, .identity = identity };
         errdefer closeFd(fd);
-        try dev.create();
+        try dev.create(descriptor);
         log(
             config,
             .info,
-            "created UHID device name={s} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}",
-            .{ config.identity.name, config.identity.vendor, config.identity.product, REPORT_DESCRIPTOR_SIZE },
+            "created UHID device name={s} bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}",
+            .{ identity.name, identity.bus, identity.vendor, identity.product, descriptor.len },
         );
         return dev;
     }
 
-    fn create(dev: *UhidDevice) !void {
+    fn create(dev: *UhidDevice, descriptor: []const u8) !void {
+        if (descriptor.len == 0 or descriptor.len > UHID_DATA_MAX) return error.InvalidReportDescriptor;
         var payload: [UHID_CREATE2_SIZE]u8 = @splat(0);
         copyZBytes(payload[0..128], dev.identity.name);
         copyZBytes(payload[128..192], dev.identity.phys);
         copyZBytes(payload[192..256], dev.identity.uniq);
-        writeU16Le(&payload, 256, REPORT_DESCRIPTOR_SIZE);
+        writeU16Le(&payload, 256, @intCast(descriptor.len));
         writeU16Le(&payload, 258, dev.identity.bus);
         writeU32Le(&payload, 260, dev.identity.vendor);
         writeU32Le(&payload, 264, dev.identity.product);
         writeU32Le(&payload, 268, dev.identity.version);
         writeU32Le(&payload, 272, dev.identity.country);
-        const rd = vendorReportDescriptor();
-        @memcpy(payload[276 .. 276 + rd.len], &rd);
+        @memcpy(payload[276 .. 276 + descriptor.len], descriptor);
         try dev.writeEvent(UHID_CREATE2, &payload);
     }
 
@@ -624,6 +662,19 @@ fn copyZBytes(dest: []u8, value: []const u8) void {
     @memcpy(dest[0..len], value[0..len]);
 }
 
+fn decodeDeviceInfo(payload: []const u8) ?DeviceInfo {
+    if (payload.len < DEVICE_INFO_HEADER_SIZE) return null;
+    const descriptor_len = readU16Le(payload, 8);
+    const size = DEVICE_INFO_HEADER_SIZE + @as(usize, descriptor_len);
+    if (descriptor_len == 0 or descriptor_len > UHID_DATA_MAX or payload.len != size) return null;
+    return .{
+        .bus = readU32Le(payload, 0),
+        .vendor = readU16Le(payload, 4),
+        .product = readU16Le(payload, 6),
+        .descriptor = payload[DEVICE_INFO_HEADER_SIZE..],
+    };
+}
+
 fn readU16Le(bytes: []const u8, offset: usize) u16 {
     return std.mem.readInt(u16, bytes[offset..][0..2], .little);
 }
@@ -674,6 +725,22 @@ fn log(config: *const Config, level: LogLevel, comptime format: []const u8, args
 fn logControlEvent(config: *const Config, count: u64, comptime format: []const u8, args: anytype) void {
     const level: LogLevel = if (count <= 20 or count % 100 == 0) .info else .debug;
     log(config, level, format, args);
+}
+
+test "device info decoder preserves descriptor" {
+    const descriptor = [_]u8{ 1, 2, 3, 4 };
+    var payload: [DEVICE_INFO_HEADER_SIZE + descriptor.len]u8 = undefined;
+    writeU32Le(&payload, 0, BUS_USB);
+    writeU16Le(&payload, 4, VALVE_VID);
+    writeU16Le(&payload, 6, 0x1302);
+    writeU16Le(&payload, 8, @intCast(descriptor.len));
+    @memcpy(payload[DEVICE_INFO_HEADER_SIZE..], &descriptor);
+
+    const info = decodeDeviceInfo(&payload).?;
+    try std.testing.expectEqual(@as(u32, BUS_USB), info.bus);
+    try std.testing.expectEqual(@as(u16, VALVE_VID), info.vendor);
+    try std.testing.expectEqual(@as(u16, 0x1302), info.product);
+    try std.testing.expectEqualSlices(u8, &descriptor, info.descriptor);
 }
 
 test "vendor report descriptor has expected shape" {

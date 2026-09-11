@@ -41,6 +41,35 @@ fn hidiocSOutput(len: usize) u32 {
 fn hidiocGOutput(len: usize) u32 {
     return hidIoc(IOC_READ | IOC_WRITE, 0x0c, len);
 }
+fn hidiocGRawInfo() u32 {
+    return hidIoc(IOC_READ, 0x03, @sizeOf(HidrawDevInfo));
+}
+fn hidiocGReportDescriptorSize() u32 {
+    return hidIoc(IOC_READ, 0x01, @sizeOf(u32));
+}
+fn hidiocGReportDescriptor() u32 {
+    return hidIoc(IOC_READ, 0x02, @sizeOf(HidrawReportDescriptor));
+}
+
+const HidrawDevInfo = extern struct {
+    bus: u32,
+    vendor: u16,
+    product: u16,
+};
+
+const HidrawReportDescriptor = extern struct {
+    size: u32,
+    value: [MAX_REPORT_DESCRIPTOR_SIZE]u8,
+};
+
+pub const MAX_REPORT_DESCRIPTOR_SIZE = 4096;
+
+pub const DeviceInfo = struct {
+    bus: u32,
+    vendor: u16,
+    product: u16,
+    descriptor_len: usize,
+};
 
 pub const Device = struct {
     file: Io.File,
@@ -52,6 +81,33 @@ pub const Device = struct {
 
     pub fn close(dev: *Device, io: Io) void {
         dev.file.close(io);
+    }
+
+    pub fn deviceInfo(dev: *Device, descriptor: *[MAX_REPORT_DESCRIPTOR_SIZE]u8) !DeviceInfo {
+        var raw_info: HidrawDevInfo = undefined;
+        const info_rc = linux.ioctl(dev.file.handle, hidiocGRawInfo(), @intFromPtr(&raw_info));
+        if (linux.errno(info_rc) != .SUCCESS) return error.GetRawInfoFailed;
+
+        var descriptor_size: u32 = undefined;
+        const size_rc = linux.ioctl(dev.file.handle, hidiocGReportDescriptorSize(), @intFromPtr(&descriptor_size));
+        if (linux.errno(size_rc) != .SUCCESS) return error.GetReportDescriptorSizeFailed;
+        if (descriptor_size == 0 or descriptor_size > MAX_REPORT_DESCRIPTOR_SIZE) return error.InvalidReportDescriptor;
+
+        var raw_descriptor = HidrawReportDescriptor{
+            .size = descriptor_size,
+            .value = undefined,
+        };
+        const descriptor_rc = linux.ioctl(dev.file.handle, hidiocGReportDescriptor(), @intFromPtr(&raw_descriptor));
+        if (linux.errno(descriptor_rc) != .SUCCESS) return error.GetReportDescriptorFailed;
+
+        const descriptor_len: usize = descriptor_size;
+        @memcpy(descriptor[0..descriptor_len], raw_descriptor.value[0..descriptor_len]);
+        return .{
+            .bus = raw_info.bus,
+            .vendor = raw_info.vendor,
+            .product = raw_info.product,
+            .descriptor_len = descriptor_len,
+        };
     }
 
     /// Reads one input report. hidraw preserves report boundaries per read;
