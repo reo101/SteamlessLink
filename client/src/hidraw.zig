@@ -106,9 +106,9 @@ pub const Device = struct {
 };
 
 /// Scans /sys/class/hidraw/hidrawN/device/uevent for a HID_ID matching
-/// vendor/product on any bus (USB 0x03 or Bluetooth 0x05). On match, writes
+/// the vendor and one product ID on any bus (USB 0x03 or Bluetooth 0x05). On match, writes
 /// "/dev/hidrawN" into `path_buf` and returns it.
-pub fn discover(io: Io, vendor: u32, product: u32, path_buf: *[32]u8) ?[]const u8 {
+pub fn discover(io: Io, vendor: u32, products: []const u32, path_buf: *[32]u8) ?[]const u8 {
     var index: u8 = 0;
     while (index < 64) : (index += 1) {
         var sys_buf: [64]u8 = undefined;
@@ -121,7 +121,7 @@ pub fn discover(io: Io, vendor: u32, product: u32, path_buf: *[32]u8) ?[]const u
         var content: [1024]u8 = undefined;
         const len = readSmallFile(io, sys_path, &content) orelse continue;
         const id = parseHidId(content[0..len]) orelse continue;
-        if (id.vendor == vendor and id.product == product) {
+        if (id.vendor == vendor and std.mem.indexOfScalar(u32, products, id.product) != null) {
             return std.fmt.bufPrint(path_buf, "/dev/hidraw{d}", .{index}) catch unreachable;
         }
     }

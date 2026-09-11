@@ -16,7 +16,7 @@ const hidraw = @import("hidraw.zig");
 const Config = struct {
     device_path: ?[]const u8 = null,
     vendor: u32 = 0x28de,
-    product: u32 = 0x1303,
+    products: []const u32 = &.{0x1303},
     host: []const u8 = "127.0.0.1",
     port: u16 = 3244,
     reconnect_ms: u32 = 2000,
@@ -31,7 +31,7 @@ const Config = struct {
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
-    const config = try parseArgs(argv);
+    const config = try parseArgs(argv, init.arena.allocator());
 
     while (true) {
         runOnce(io, &config) catch |err| switch (err) {
@@ -46,8 +46,9 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn parseArgs(argv: []const []const u8) !Config {
+fn parseArgs(argv: []const []const u8, allocator: std.mem.Allocator) !Config {
     var config = Config{};
+    var products: std.ArrayList(u32) = .empty;
     var i: usize = 1;
     while (i < argv.len) : (i += 1) {
         const arg = argv[i];
@@ -65,7 +66,7 @@ fn parseArgs(argv: []const []const u8) !Config {
         } else if (std.mem.eql(u8, arg, "--pid")) {
             i += 1;
             if (i >= argv.len) return error.MissingArgument;
-            config.product = try std.fmt.parseInt(u32, argv[i], 0);
+            try products.append(allocator, try std.fmt.parseInt(u32, argv[i], 0));
         } else if (std.mem.eql(u8, arg, "--host")) {
             i += 1;
             if (i >= argv.len) return error.MissingArgument;
@@ -90,7 +91,18 @@ fn parseArgs(argv: []const []const u8) !Config {
             return error.UnknownArgument;
         }
     }
+    if (products.items.len != 0) config.products = products.items;
     return config;
+}
+
+test "parseArgs accepts repeated product IDs" {
+    var buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const config = try parseArgs(
+        &.{ "steamless-link-controller", "--pid", "0x1302", "--pid", "0x1303" },
+        fba.allocator(),
+    );
+    try std.testing.expectEqualSlices(u32, &.{ 0x1302, 0x1303 }, config.products);
 }
 
 fn printUsage() void {
@@ -101,7 +113,7 @@ fn printUsage() void {
         \\  --device PATH        hidraw device, e.g. /dev/hidraw3
         \\                       (default: discover by VID/PID)
         \\  --vid VID            vendor ID to discover, default 0x28de
-        \\  --pid PID            product ID to discover, default 0x1303
+        \\  --pid PID            product ID to discover, repeat for alternatives
         \\  --host HOST          server address, default 127.0.0.1
         \\  --port PORT          server TCP port, default 3244
         \\  --reconnect-ms MS    delay between retries, default 2000
@@ -114,7 +126,7 @@ fn printUsage() void {
 fn runOnce(io: Io, config: *const Config) !void {
     var path_buf: [32]u8 = undefined;
     const device_path = config.device_path orelse
-        hidraw.discover(io, config.vendor, config.product, &path_buf) orelse {
+        hidraw.discover(io, config.vendor, config.products, &path_buf) orelse {
         return error.DeviceNotFound;
     };
 

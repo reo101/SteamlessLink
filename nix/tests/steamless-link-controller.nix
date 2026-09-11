@@ -238,6 +238,7 @@ in
         services.steamless-link-controller = {
           enable = true;
           package = steamlessLinkControllerPackage;
+          productIds = [ 4866 4867 ]; # 0x1302 USB, 0x1303 Bluetooth
           host = testNetwork.steam.hostName;
           port = uhidServer.listenPort;
           reconnectMs = 50;

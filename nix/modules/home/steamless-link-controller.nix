@@ -12,6 +12,7 @@
 }:
 let
   cfg = config.services.steamless-link-controller;
+  productIds = cfg.productIds;
   hex = value: "0x${lib.toHexString value}";
 in
 {
@@ -27,7 +28,7 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       example = "/dev/hidraw3";
-      description = "hidraw device to bridge. Defaults to discovery by vendorId/productId.";
+      description = "hidraw device to bridge. Defaults to discovery by vendorId/productIds.";
     };
 
     vendorId = lib.mkOption {
@@ -36,10 +37,10 @@ in
       description = "HID vendor ID of the controller.";
     };
 
-    productId = lib.mkOption {
-      type = lib.types.int;
-      default = 4867; # 0x1303, Triton BLE
-      description = "HID product ID of the controller.";
+    productIds = lib.mkOption {
+      type = lib.types.nonEmptyListOf lib.types.int;
+      default = [ 4867 ]; # 0x1303, Triton BLE
+      description = "HID product IDs of the controller.";
     };
 
     host = lib.mkOption {
@@ -85,8 +86,12 @@ in
             (lib.getExe cfg.package)
             "--vid"
             (hex cfg.vendorId)
+          ]
+          ++ lib.concatMap (productId: [
             "--pid"
-            (hex cfg.productId)
+            (hex productId)
+          ]) productIds
+          ++ [
             "--host"
             cfg.host
             "--port"

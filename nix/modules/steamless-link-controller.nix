@@ -27,21 +27,25 @@
 }:
 let
   cfg = config.services.steamless-link-controller;
+  productIds = cfg.productIds;
 
   hex8 = value: lib.fixedWidthString 8 "0" (lib.toHexString value);
   # uevent lines look like: HID_ID=0005:000028DE:00001303 (any bus).
-  hidIdPattern = "^HID_ID=[0-9A-F]\\{4\\}:${hex8 cfg.vendorId}:${hex8 cfg.productId}$";
+  hidIdPattern = lib.concatMapStringsSep "|" (productId: "^HID_ID=[0-9A-F]{4}:${hex8 cfg.vendorId}:${hex8 productId}$") productIds;
 
   captureFlag = "/run/steamless-link-controller/capture";
   # sysfs input id attributes are zero-padded lowercase hex (e.g. 28de/1303).
   hexify = lib.flip lib.pipe [ lib.toHexString (lib.fixedWidthString 4 "0") lib.toLower ];
   vidHex = hexify cfg.vendorId;
-  pidHex = hexify cfg.productId;
+  productIdHexes = map hexify productIds;
+  captureInputRules = lib.concatMapStringsSep "\n" (pidHex: ''
+    ACTION=="add|change", SUBSYSTEM=="input", TEST=="${captureFlag}", ATTRS{id/vendor}=="${vidHex}", ATTRS{id/product}=="${pidHex}", ENV{ID_INPUT}="", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_JOYSTICK}="", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG-="uaccess"
+  '') productIdHexes;
 
   matchHidrawScript = pkgs.writeShellScript "steamless-link-controller-match" ''
     # $1 is the udev devpath of a hidraw device, e.g.
     # /devices/.../0005:28DE:1303.0001/hidraw/hidraw0
-    exec ${pkgs.gnugrep}/bin/grep -q '${hidIdPattern}' "/sys$1/device/uevent"
+    exec ${pkgs.gnugrep}/bin/grep -Eq '${hidIdPattern}' "/sys$1/device/uevent"
   '';
 
   captureCtl = pkgs.writeShellApplication {
@@ -60,7 +64,7 @@ let
       rebind() {
         for dev in /sys/bus/hid/devices/*; do
           [ -e "$dev/uevent" ] || continue
-          grep -q '${hidIdPattern}' "$dev/uevent" || continue
+          grep -Eq '${hidIdPattern}' "$dev/uevent" || continue
           [ -e "$dev/driver" ] || continue
           name=$(basename "$dev")
           driver=$(readlink -f "$dev/driver")
@@ -103,7 +107,7 @@ let
       # and setting LIBINPUT_IGNORE_DEVICE makes libinput skip the nodes; the
       # capturectl rebind re-runs these rules when the flag toggles, so the
       # devices come back to local consumers on capture stop.
-      ACTION=="add|change", SUBSYSTEM=="input", TEST=="${captureFlag}", ATTRS{id/vendor}=="${vidHex}", ATTRS{id/product}=="${pidHex}", ENV{ID_INPUT}="", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_JOYSTICK}="", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG-="uaccess"
+      ${captureInputRules}
     '';
   };
 in
@@ -122,7 +126,7 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       example = "/dev/hidraw3";
-      description = "hidraw device to bridge. Defaults to discovery by vendorId/productId.";
+      description = "hidraw device to bridge. Defaults to discovery by vendorId/productIds.";
     };
 
     vendorId = lib.mkOption {
@@ -131,10 +135,10 @@ in
       description = "HID vendor ID of the controller.";
     };
 
-    productId = lib.mkOption {
-      type = lib.types.int;
-      default = 4867; # 0x1303, Triton BLE
-      description = "HID product ID of the controller.";
+    productIds = lib.mkOption {
+      type = lib.types.nonEmptyListOf lib.types.int;
+      default = [ 4867 ]; # 0x1303, Triton BLE
+      description = "HID product IDs of the controller.";
     };
 
     host = lib.mkOption {
@@ -195,7 +199,7 @@ in
         package = cfg.package;
         device = cfg.device;
         vendorId = cfg.vendorId;
-        productId = cfg.productId;
+        productIds = cfg.productIds;
         host = cfg.host;
         port = cfg.port;
         reconnectMs = cfg.reconnectMs;
