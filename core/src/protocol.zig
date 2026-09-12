@@ -3,7 +3,7 @@
 //! Every frame is `u8 frame_type`, `u16be payload_length`, payload bytes.
 //!
 //! Controller side -> UHID server:
-//! - FRAME_INPUT: numbered HID input report (normally 0x45 + 45 bytes)
+//! - FRAME_INPUT: numbered HID input report (normally 0x47 or legacy 0x45 + 45 bytes)
 //! - FRAME_GET_REPORT_REPLY: u32le request_id, u16le errno, report bytes
 //! - FRAME_SET_REPORT_REPLY: u32le request_id, u16le errno
 //! - FRAME_DEVICE_INFO: HID bus, vendor/product IDs, and report descriptor;

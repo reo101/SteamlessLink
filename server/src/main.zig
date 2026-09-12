@@ -43,7 +43,7 @@ const DeviceInfo = struct {
     descriptor: []const u8,
 };
 
-const REPORT_DESCRIPTOR_SIZE = 7 + 18 * 15 + 1;
+const REPORT_DESCRIPTOR_SIZE = 7 + 19 * 15 + 1;
 
 const LogLevel = enum(u8) {
     debug = 0,
@@ -620,6 +620,7 @@ fn vendorReportDescriptor() [REPORT_DESCRIPTOR_SIZE]u8 {
     appendDescriptor(&out, &index, &.{ 0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01 });
 
     addReport(&out, &index, 0x45, 0x81, 45);
+    addReport(&out, &index, 0x47, 0x81, 45);
     addReport(&out, &index, 0x42, 0x81, 63);
     addReport(&out, &index, 0x43, 0x81, 63);
 
@@ -747,6 +748,7 @@ test "vendor report descriptor has expected shape" {
     const rd = vendorReportDescriptor();
     try std.testing.expectEqual(@as(usize, REPORT_DESCRIPTOR_SIZE), rd.len);
     try std.testing.expectEqual(@as(u8, 0x06), rd[0]);
+    try std.testing.expect(std.mem.indexOf(u8, &rd, &.{ 0x85, 0x47 }) != null);
     try std.testing.expectEqual(@as(u8, 0xc0), rd[rd.len - 1]);
 }
 

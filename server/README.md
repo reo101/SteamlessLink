@@ -71,7 +71,8 @@ payload bytes
 
 Controller -> host:
 
-- `0x01 FRAME_INPUT`: numbered HID input report, normally `0x45` + 45-byte Triton BLE payload
+- `0x01 FRAME_INPUT`: numbered HID input report, normally `0x47` or legacy
+  `0x45` + 45-byte Triton BLE payload
 - `0x02 FRAME_GET_REPORT_REPLY`: `u32le request_id`, `u16le errno`, report bytes
 - `0x03 FRAME_SET_REPORT_REPLY`: `u32le request_id`, `u16le errno`
 - `0x04 FRAME_DEVICE_INFO`: `u32le bus`, `u16le vendor`, `u16le product`,

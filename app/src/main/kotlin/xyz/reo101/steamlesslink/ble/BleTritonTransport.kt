@@ -33,7 +33,6 @@ class BleTritonTransport(
 ) : Closeable {
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter = bluetoothManager.adapter
-    private val segmentReassembler = BleSegmentReassembler(onReport, onStatus)
     private var gatt: BluetoothGatt? = null
     private var reportCharacteristic: BluetoothGattCharacteristic? = null
     private val outputReportCharacteristics = mutableMapOf<Int, BluetoothGattCharacteristic>()
@@ -51,7 +50,6 @@ class BleTritonTransport(
     private val reportIoLock = Any()
     private val pendingWrite = AtomicReference<PendingWrite?>(null)
     private val pendingRead = AtomicReference<PendingRead?>(null)
-    private val lastIgnoredReportStatusAtMs = mutableMapOf<Int, Long>()
     private val readyLatch = CountDownLatch(1)
     @Volatile private var ready = false
     private var lastNotificationStatusAtMs = 0L
@@ -179,9 +177,10 @@ class BleTritonTransport(
                 )
             }
 
-            val input = service.getCharacteristic(TRITON_INPUT_CHARACTERISTIC)
+            val input = service.getCharacteristic(TRITON_TIMESTAMP_INPUT_CHARACTERISTIC)
+                ?: service.getCharacteristic(TRITON_INPUT_CHARACTERISTIC)
             if (input == null) {
-                onStatus("Triton BLE input characteristic not found")
+                onStatus("Triton BLE state characteristic not found")
                 return
             }
             reportCharacteristic = service.getCharacteristic(REPORT_CHARACTERISTIC)
@@ -191,13 +190,8 @@ class BleTritonTransport(
                 if (reportId != null && reportId >= 0x80) outputReportCharacteristics[reportId] = characteristic
             }
             pendingNotificationCharacteristics.clear()
-            pendingNotificationCharacteristics.addAll(
-                service.characteristics.filter { characteristic ->
-                    characteristic.getDescriptor(CCC_DESCRIPTOR) != null &&
-                        (characteristic.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0
-                },
-            )
-            onStatus("Valve BLE service found; enabling ${pendingNotificationCharacteristics.size} notification characteristics")
+            pendingNotificationCharacteristics.add(input)
+            onStatus("Valve BLE state characteristic ${input.uuid}; enabling notifications")
             enableNextNotification(gatt)
         }
 
@@ -298,43 +292,20 @@ class BleTritonTransport(
 
     private fun handleNotification(characteristicUuid: UUID, value: ByteArray) {
         if (value.isEmpty()) return
+        val reportId = reportIdFromCharacteristic(characteristicUuid) ?: return
         notificationCount += 1
-        val valueFirstByte = value.u8(0)
-        val uuidReportId = reportIdFromCharacteristic(characteristicUuid)
-        val logicalReportId = uuidReportId ?: valueFirstByte
         val now = System.currentTimeMillis()
         if (now - lastNotificationStatusAtMs >= NOTIFICATION_STATUS_INTERVAL_MS) {
             lastNotificationStatusAtMs = now
             onStatus(
-                "BLE notifications: count=$notificationCount char=$characteristicUuid uuidId=%s first=0x%02x len=${value.size} head=${value.hex(8)}".format(
-                    uuidReportId?.let { "0x%02x".format(it) } ?: "?",
-                    valueFirstByte,
+                "BLE notifications: count=$notificationCount char=$characteristicUuid uuidId=0x%02x first=0x%02x len=${value.size} head=${value.hex(8)}".format(
+                    reportId,
+                    value.u8(0),
                 ),
             )
         }
-
-        val report = if (uuidReportId != null && valueFirstByte != uuidReportId) {
-            ByteArray(value.size + 1).also { out ->
-                out[0] = uuidReportId.toByte()
-                value.copyInto(out, destinationOffset = 1)
-            }
-        } else {
-            value
-        }
-
-        when (logicalReportId) {
-            0x45 -> onReport(report.copyOf(), report.size)
-            0x03 -> segmentReassembler.accept(report)
-            0x01, 0x02, 0x43, 0x44 -> Unit
-            else -> logIgnoredReport(logicalReportId, report.size, now)
-        }
-    }
-
-    private fun logIgnoredReport(reportId: Int, length: Int, now: Long) {
-        val last = lastIgnoredReportStatusAtMs[reportId] ?: 0L
-        if (now - last < IGNORED_REPORT_STATUS_INTERVAL_MS) return
-        lastIgnoredReportStatusAtMs[reportId] = now
-        onStatus("Ignoring BLE report id=0x%02x len=$length".format(reportId))
+        val report = numberBleReport(reportId, value)
+        onReport(report, report.size)
     }
 
     private fun startLizardModeRefresh() {
@@ -557,7 +528,6 @@ class BleTritonTransport(
         readyLatch.countDown()
         outputReportCharacteristics.clear()
         pendingNotificationCharacteristics.clear()
-        lastIgnoredReportStatusAtMs.clear()
     }
 
     private fun reportIdFromCharacteristic(uuid: UUID): Int? {
@@ -573,11 +543,11 @@ class BleTritonTransport(
     companion object {
         val STEAM_CONTROLLER_SERVICE: UUID = UUID.fromString("100f6c32-1735-4313-b402-38567131e5f3")
         val TRITON_INPUT_CHARACTERISTIC: UUID = UUID.fromString("100f6c7a-1735-4313-b402-38567131e5f3")
+        val TRITON_TIMESTAMP_INPUT_CHARACTERISTIC: UUID = UUID.fromString("100f6c7c-1735-4313-b402-38567131e5f3")
         val REPORT_CHARACTERISTIC: UUID = UUID.fromString("100f6c34-1735-4313-b402-38567131e5f3")
         private val CCC_DESCRIPTOR: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val SCAN_TIMEOUT_SECONDS = 15L
         private const val NOTIFICATION_STATUS_INTERVAL_MS = 1000L
-        private const val IGNORED_REPORT_STATUS_INTERVAL_MS = 10_000L
         private const val GATT_RETRY_DELAY_MS = 30L
         private const val MAX_OUTPUT_REPORT_QUEUE = 4
         private const val OUTPUT_DROP_STATUS_INTERVAL_MS = 1000L
@@ -618,36 +588,8 @@ private class PendingRead {
 
 private data class PendingReadResult(val status: Int, val value: ByteArray)
 
-private class BleSegmentReassembler(
-    private val onReport: (ByteArray, Int) -> Unit,
-    private val onStatus: (String) -> Unit,
-) {
-    private val buffer = ArrayList<Byte>(128)
-    private var expectedSequence = 0
-
-    fun accept(chunk: ByteArray) {
-        if (chunk.size < 2) return
-        val flags = chunk.u8(1)
-        val hasSegmentFlag = (flags and 0x80) != 0
-        val isFinal = (flags and 0x40) != 0
-        val sequence = flags and 0x07
-        if (!hasSegmentFlag) return
-
-        if (sequence != expectedSequence) {
-            onStatus("BLE segment sequence reset: got=$sequence expected=$expectedSequence")
-            buffer.clear()
-            expectedSequence = sequence
-        }
-
-        for (i in 2 until chunk.size) buffer.add(chunk[i])
-        expectedSequence = (sequence + 1) and 0x07
-
-        if (isFinal) {
-            val report = ByteArray(buffer.size)
-            for (i in buffer.indices) report[i] = buffer[i]
-            buffer.clear()
-            expectedSequence = 0
-            if (report.isNotEmpty()) onReport(report, report.size)
-        }
+internal fun numberBleReport(reportId: Int, payload: ByteArray): ByteArray =
+    ByteArray(payload.size + 1).also { report ->
+        report[0] = reportId.toByte()
+        payload.copyInto(report, destinationOffset = 1)
     }
-}

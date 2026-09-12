@@ -73,6 +73,32 @@ class TritonReportParserTest {
     }
 
     @Test
+    fun parsesTimestampedBleStateReport() {
+        val report = ByteArray(46)
+        report[0] = TritonReportParser.REPORT_ID_BLE_TIMESTAMP_STATE.toByte()
+        report[1] = 0x21
+        report.putU32Le(2, SteamControllerButtons.STEAM)
+        report.putI16Le(18, 0x1234)
+        report.putI16Le(20, 11)
+        report.putI16Le(22, 22)
+        report.putI16Le(24, 333)
+        report.putI16Le(26, 44)
+        report.putI16Le(28, 55)
+        report.putI16Le(30, 666)
+
+        val state = requireNotNull(TritonReportParser.parse(report))
+
+        assertEquals(TritonReportParser.REPORT_ID_BLE_TIMESTAMP_STATE, state.reportId)
+        assertEquals(SteamControllerButtons.STEAM, state.buttons)
+        assertEquals(11.toShort(), state.leftPadX)
+        assertEquals(22.toShort(), state.leftPadY)
+        assertEquals(333.toUShort(), state.leftPadPressure)
+        assertEquals(44.toShort(), state.rightPadX)
+        assertEquals(55.toShort(), state.rightPadY)
+        assertEquals(666.toUShort(), state.rightPadPressure)
+    }
+
+    @Test
     fun ignoresUnknownOrShortReports() {
         assertNull(TritonReportParser.parse(byteArrayOf(0x01, 0x02)))
         assertNull(TritonReportParser.parse(ByteArray(18) { if (it == 0) 0x43 else 0 }))

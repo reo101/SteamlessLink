@@ -205,9 +205,11 @@ The app will:
 - prefer bonded LE devices named `SteamController` or `Steam Ctrl*`
 - otherwise scan for those names for 15 seconds
 - discover Valve service `100f6c32-1735-4313-b402-38567131e5f3`
-- enable notifications for Valve report characteristics `100f6c75` through `100f6c7a`
-- reconstruct missing BLE report IDs from the characteristic UUID (`100f6c7a` -> `0x45`)
-- forward numbered `0x45` Triton BLE input reports to the Steamless Link host
+- enable notifications for the current Valve state characteristic, preferring
+  `100f6c7c` (`0x47`) and falling back to `100f6c7a` (`0x45`)
+- reconstruct the missing BLE report ID from its characteristic UUID
+- forward numbered `0x47` or legacy `0x45` Triton BLE input reports to the
+  Steamless Link host
 - proxy Steam feature reports through BLE report characteristic `100f6c34`
 - proxy Steam output reports through BLE output characteristics `100f6cb5` through `100f6cbe`
 
