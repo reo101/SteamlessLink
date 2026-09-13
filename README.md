@@ -106,8 +106,16 @@ printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
 
 ```sh
 steamless-link-host --listen-host 127.0.0.1 --listen-port 3244
-nix run .#steamless-link-iroh-proxy -- 127.0.0.1:3244
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/steamless-link-iroh-proxy"
+install -d -m 700 "$state_dir"
+nix run .#steamless-link-iroh-proxy -- --identity-key "$state_dir/identity.key" 127.0.0.1:3244
 ```
+
+The identity key is 32 secret bytes, mode `0600`. `STEAMLESS_IROH_IDENTITY_KEY`
+sets the same path for service managers; `--identity-key` takes precedence.
+Reuse it across restarts so existing tickets keep the same endpoint identity.
+Back it up only to migrate the host, keep it private, and do not run two hosts
+with the same key at once.
 
 With the NixOS module, enable both services and read the ticket from the proxy
 journal:
@@ -124,7 +132,7 @@ services.steamless-link-host = {
 ```
 
 ```sh
-journalctl -u steamless-link-iroh-proxy -b -o cat | grep '^endpoint' | tail -1
+journalctl -u steamless-link-iroh-proxy -b -o cat | grep '^Forwarding Iroh ' | tail -1 | awk '{print $3}'
 ```
 
 ## Steam host
@@ -170,6 +178,8 @@ From a flake-based NixOS config:
   };
 }
 ```
+
+The Iroh proxy stores its identity in `/var/lib/steamless-link-iroh-proxy/identity.key`; systemd creates the directory with mode `0700` and the proxy writes the key with mode `0600`. Back up that key only to migrate the host, and never run two hosts with the same key simultaneously.
 
 The current protocol is unauthenticated raw TCP. Bind it only to trusted networks, firewall it to the Android device, or use a tunnel/proxy.
 

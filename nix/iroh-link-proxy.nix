@@ -9,7 +9,6 @@ let
     version = "0.1.0";
     inherit src;
     strictDeps = true;
-    doCheck = false;
   };
 
   cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {

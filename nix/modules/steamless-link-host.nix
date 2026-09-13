@@ -139,8 +139,13 @@ in
         Type = "simple";
         ExecStart = lib.escapeShellArgs [
           "${cfg.iroh.package}/bin/steamless-link-iroh-proxy"
+          "--identity-key"
+          "/var/lib/steamless-link-iroh-proxy/identity.key"
           "${cfg.iroh.targetHost}:${toString (if cfg.iroh.targetPort == null then cfg.listenPort else cfg.iroh.targetPort)}"
         ];
+        StateDirectory = "steamless-link-iroh-proxy";
+        StateDirectoryMode = "0700";
+        UMask = "0077";
         User = cfg.user;
         SupplementaryGroups = cfg.supplementaryGroups;
         Restart = "on-failure";
