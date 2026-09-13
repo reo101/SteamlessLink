@@ -27,6 +27,7 @@
 }:
 let
   cfg = config.services.steamless-link-controller;
+  controller = import ../../client/config.nix { inherit lib; };
   productIds = cfg.productIds;
 
   hex8 = value: lib.fixedWidthString 8 "0" (lib.toHexString value);
@@ -112,81 +113,25 @@ let
   };
 in
 {
-  options.services.steamless-link-controller = {
-    enable = lib.mkEnableOption "Steamless Link controller bridge";
-
+  options.services.steamless-link-controller = controller.mkOptions {
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.callPackage ../../client/package.nix { };
       defaultText = lib.literalExpression "pkgs.callPackage ./client/package.nix { }";
       description = "Package providing the steamless-link-controller executable.";
     };
+    withDeviceGroup = true;
+  } // {
+    enable = lib.mkEnableOption "Steamless Link controller bridge";
 
-    device = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/dev/hidraw3";
-      description = "hidraw device to bridge. Defaults to discovery by vendorId/productIds.";
-    };
-
-    vendorId = lib.mkOption {
-      type = lib.types.int;
-      default = 10462; # 0x28de, Valve
-      description = "HID vendor ID of the controller.";
-    };
-
-    productIds = lib.mkOption {
-      type = lib.types.nonEmptyListOf lib.types.int;
-      default = [ 4867 ]; # 0x1303, Triton BLE
-      description = "HID product IDs of the controller.";
-    };
-
-    host = lib.mkOption {
-      type = lib.types.str;
-      default = "127.0.0.1";
-      description = "Steamless Link host (or Iroh proxy) address to connect to.";
-    };
-
-    port = lib.mkOption {
-      type = lib.types.port;
-      default = 3244;
-      description = "Steamless Link host TCP port.";
-    };
-
-    reconnectMs = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 2000;
-      description = "Delay between device/connection retries, in milliseconds.";
-    };
-
-    logLevel = lib.mkOption {
-      type = lib.types.enum [ "debug" "info" "warning" "error" ];
-      default = "info";
-      description = "Daemon log level.";
-    };
-
-    extraArgs = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      description = "Extra command-line arguments passed to steamless-link-controller.";
-    };
-
-    deviceGroup = lib.mkOption {
-      type = lib.types.str;
-      default = "steamless-link-input";
-      description = "Group granted access to the captured hidraw node.";
-    };
-
-    capture = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = ''
-          Steal the controller from local consumers (e.g. a running Steam)
-          while the bridge is active, by rebinding the HID device and
-          restricting the hidraw node to the daemon's device group.
-        '';
-      };
+    capture.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Steal the controller from local consumers (e.g. a running Steam)
+        while the bridge is active, by rebinding the HID device and
+        restricting the hidraw node to the daemon's device group.
+      '';
     };
   };
 

@@ -17,102 +17,21 @@
 }:
 let
   cfg = config.steamless-link-controller;
-  productIds = cfg.productIds;
-  hex = value: "0x${lib.toHexString value}";
+  controller = import ./config.nix { inherit lib; };
 in
 {
   _class = "service";
 
-  options.steamless-link-controller = {
+  options.steamless-link-controller = controller.mkOptions {
     package = lib.mkOption {
       type = lib.types.package;
       description = "Package providing the steamless-link-controller executable.";
     };
-
-    device = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/dev/hidraw3";
-      description = "hidraw device to bridge. Defaults to discovery by vendorId/productIds.";
-    };
-
-    vendorId = lib.mkOption {
-      type = lib.types.int;
-      default = 10462; # 0x28de, Valve
-      description = "HID vendor ID used for device discovery.";
-    };
-
-    productIds = lib.mkOption {
-      type = lib.types.nonEmptyListOf lib.types.int;
-      default = [ 4867 ]; # 0x1303, Triton BLE
-      description = "HID product IDs used for device discovery.";
-    };
-
-    host = lib.mkOption {
-      type = lib.types.str;
-      default = "127.0.0.1";
-      description = "Steamless Link host (or Iroh proxy) address to connect to.";
-    };
-
-    port = lib.mkOption {
-      type = lib.types.port;
-      default = 3244;
-      description = "Steamless Link host TCP port.";
-    };
-
-    reconnectMs = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 2000;
-      description = "Delay between device/connection retries, in milliseconds.";
-    };
-
-    logLevel = lib.mkOption {
-      type = lib.types.enum [ "debug" "info" "warning" "error" ];
-      default = "info";
-      description = "Daemon log level.";
-    };
-
-    extraArgs = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      description = "Extra command-line arguments passed to steamless-link-controller.";
-    };
-
-    deviceGroup = lib.mkOption {
-      type = lib.types.str;
-      default = "steamless-link-input";
-      description = ''
-        Supplementary group granting access to the captured hidraw node.
-        Must match the group used by the host's udev capture rules.
-      '';
-    };
+    withDeviceGroup = true;
   };
 
   config = {
-    process.argv = [
-      (lib.getExe cfg.package)
-      "--vid"
-      (hex cfg.vendorId)
-    ]
-    ++ lib.concatMap (productId: [
-      "--pid"
-      (hex productId)
-    ]) productIds
-    ++ [
-      "--host"
-      cfg.host
-      "--port"
-      (toString cfg.port)
-      "--reconnect-ms"
-      (toString cfg.reconnectMs)
-      "--log-level"
-      cfg.logLevel
-    ]
-    ++ lib.optionals (cfg.device != null) [
-      "--device"
-      cfg.device
-    ]
-    ++ cfg.extraArgs;
+    process.argv = controller.mkArgs cfg;
   }
   // lib.optionalAttrs (options ? systemd) {
     systemd.service = {
