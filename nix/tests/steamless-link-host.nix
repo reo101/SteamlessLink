@@ -31,7 +31,7 @@ let
     tritonBleProductHex = "1303";
     hidDeviceGlob = "/sys/bus/hid/devices/${hidBusHex}:${valveVendorHex}:${tritonBleProductHex}.*/hidraw/hidraw*";
     hidIdUevent = "HID_ID=${hidBusHex}:0000${valveVendorHex}:0000${tritonBleProductHex}";
-    reportDescriptorLength = 278;
+    reportDescriptorLength = 293;
     inputReportId = 69; # 0x45, the numbered Triton BLE input report
     inputReportSize = 46;
     outputReportHex = "8001020304";
