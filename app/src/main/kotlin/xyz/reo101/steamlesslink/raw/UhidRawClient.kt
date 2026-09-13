@@ -12,6 +12,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class UhidRawClient(
@@ -40,6 +42,7 @@ class UhidRawClient(
     private val input = DataInputStream(connection.input)
     private val output = DataOutputStream(connection.output)
     private val closed = AtomicBoolean(false)
+    private val closedLatch = CountDownLatch(1)
     private val inputQueueLock = Object()
     private val queuedInputReports = ArrayDeque<ByteArray>()
     private val writer = Thread(::writeLoop, "steamless-link-writer").apply {
@@ -120,6 +123,7 @@ class UhidRawClient(
         }.onFailure { error ->
             if (!closed.get()) onStatus("Steamless Link reader stopped: ${error.message ?: error::class.java.simpleName}")
         }
+        close()
     }
 
     private fun handleOutputReport(payload: ByteArray) {
@@ -175,8 +179,11 @@ class UhidRawClient(
         if (controlRequestCount <= 8 || controlRequestCount % 100L == 0L) onStatus(message)
     }
 
+    fun awaitClosed(timeoutMs: Long): Boolean = closedLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        closedLatch.countDown()
         synchronized(inputQueueLock) {
             queuedInputReports.clear()
             inputQueueLock.notifyAll()

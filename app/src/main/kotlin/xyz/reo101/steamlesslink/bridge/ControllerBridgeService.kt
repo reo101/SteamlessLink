@@ -93,38 +93,7 @@ class ControllerBridgeService : Service() {
                 if (!isCurrentBridge(generation)) return@runCatching
                 if (!awaitCaptureReady(generation)) return@runCatching
                 if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH) {
-                    val connection = if (mode == MODE_UHID_RAW_IROH) {
-                        status("Connecting to Steamless Link host over Iroh")
-                        irohRawUhidConnection(this@ControllerBridgeService, irohTicket, onStatus = ::status)
-                    } else {
-                        status("Connecting to Steamless Link host at $host:$port")
-                        null
-                    }
-                    val raw = if (connection != null) {
-                        UhidRawClient(
-                            connection = connection,
-                            onStatus = ::status,
-                            onGetReport = ::handleRawGetReport,
-                            onSetReport = ::handleRawSetReport,
-                            onOutputReport = ::handleRawOutputReport,
-                        )
-                    } else {
-                        UhidRawClient(
-                            host = host,
-                            port = port,
-                            onStatus = ::status,
-                            onGetReport = ::handleRawGetReport,
-                            onSetReport = ::handleRawSetReport,
-                            onOutputReport = ::handleRawOutputReport,
-                        )
-                    }
-                    if (!isCurrentBridge(generation)) {
-                        raw.close()
-                        return@runCatching
-                    }
-                    rawClientRef.set(raw)
-                    synchronized(closeables) { closeables.add(raw) }
-                    status("Connected to Steamless Link host; forwarding Triton reports")
+                    runRawBridge(host, port, mode, irohTicket, generation)
                     return@runCatching
                 }
 
@@ -174,6 +143,59 @@ class ControllerBridgeService : Service() {
                 }
                 status("Capture is running, but $target connect failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "$target startup failed", error)
+            }
+        }
+    }
+
+    private fun runRawBridge(host: String, port: Int, mode: String, irohTicket: String, generation: Long) {
+        while (isCurrentBridge(generation)) {
+            var raw: UhidRawClient? = null
+            try {
+                raw = if (mode == MODE_UHID_RAW_IROH) {
+                    status("Connecting to Steamless Link host over Iroh")
+                    UhidRawClient(
+                        connection = irohRawUhidConnection(this, irohTicket, onStatus = ::status),
+                        onStatus = ::status,
+                        onGetReport = ::handleRawGetReport,
+                        onSetReport = ::handleRawSetReport,
+                        onOutputReport = ::handleRawOutputReport,
+                    )
+                } else {
+                    status("Connecting to Steamless Link host at $host:$port")
+                    UhidRawClient(
+                        host = host,
+                        port = port,
+                        onStatus = ::status,
+                        onGetReport = ::handleRawGetReport,
+                        onSetReport = ::handleRawSetReport,
+                        onOutputReport = ::handleRawOutputReport,
+                    )
+                }
+                if (!isCurrentBridge(generation)) return
+                rawClientRef.set(raw)
+                synchronized(closeables) { closeables.add(raw) }
+                status("Connected to Steamless Link host; forwarding Triton reports")
+                while (isCurrentBridge(generation) && !raw.awaitClosed(RAW_CONNECTION_WAIT_MS)) Unit
+            } catch (error: Exception) {
+                if (isCurrentBridge(generation)) {
+                    status("Steamless Link connection failed: ${error.message ?: error::class.java.simpleName}")
+                    Log.e(TAG, "Steamless Link connection failed", error)
+                }
+            } finally {
+                raw?.let { client ->
+                    rawClientRef.compareAndSet(client, null)
+                    client.close()
+                    synchronized(closeables) { closeables.remove(client) }
+                }
+            }
+            if (isCurrentBridge(generation)) {
+                status("Steamless Link stream disconnected; retrying")
+                try {
+                    Thread.sleep(RAW_RECONNECT_DELAY_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
+                }
             }
         }
     }
@@ -266,10 +288,12 @@ class ControllerBridgeService : Service() {
             runCatching {
                 if (!rawClient.sendInputReport(triton.rawReport, triton.rawReport.size)) {
                     rawClientRef.compareAndSet(rawClient, null)
+                    rawClient.close()
                     status("Steamless Link stream is closed")
                 }
             }.onFailure { error ->
                 rawClientRef.compareAndSet(rawClient, null)
+                rawClient.close()
                 status("Steamless Link stream write failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "UHID raw stream write failed", error)
             }
@@ -473,6 +497,8 @@ class ControllerBridgeService : Service() {
         private const val REPORT_STATUS_INTERVAL_MS = 1000L
         private const val DROPPED_STATUS_INTERVAL_MS = 5000L
         private const val BLE_READY_TIMEOUT_MS = 12_000L
+        private const val RAW_CONNECTION_WAIT_MS = 500L
+        private const val RAW_RECONNECT_DELAY_MS = 2_000L
         private val DIAGNOSTIC_NOTIFICATION_PREFIXES = listOf(
             "Available networks:",
             "BLE MTU changed",
