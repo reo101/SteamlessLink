@@ -24,6 +24,12 @@ let
     logLevel = "debug";
   };
 
+  irohProxy = {
+    bindAddr = "${testNetwork.steam.ipv4}:34244";
+    externalAddr = "${testNetwork.steam.ipv4}:34244";
+    stateDirectory = "/var/lib/steamless-link-iroh-proxy";
+  };
+
   steamController = rec {
     name = "Steam Controller";
     hidBusHex = "0003";
@@ -227,6 +233,10 @@ in
           listenPort = uhidServer.listenPort;
           logLevel = uhidServer.logLevel;
           openFirewall = true;
+          iroh = {
+            enable = true;
+            inherit (irohProxy) bindAddr externalAddr;
+          };
         };
       };
 
@@ -241,6 +251,12 @@ in
     steam.wait_for_unit("multi-user.target")
     steam.wait_for_unit("steamless-link-host.service")
     steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'listening on ${uhidServer.listenHost}:${toString uhidServer.listenPort}'")
+    steam.wait_for_unit("steamless-link-iroh-proxy.service")
+    steam.wait_until_succeeds("test -f ${irohProxy.stateDirectory}/identity.key")
+    steam.succeed("test \"$(stat -c %U ${irohProxy.stateDirectory})\" = steam")
+    steam.succeed("test \"$(stat -c %a ${irohProxy.stateDirectory})\" = 700")
+    steam.succeed("test \"$(stat -c %a ${irohProxy.stateDirectory}/identity.key)\" = 600")
+    steam.succeed("test \"$(stat -c %s ${irohProxy.stateDirectory}/identity.key)\" = 32")
 
     phone.wait_for_unit("multi-user.target")
     phone.succeed("${lib.getExe steamlessPhoneClient} > ${phoneClientConfig.logPath} 2>&1 &")
