@@ -102,6 +102,7 @@ class TritonReportParserTest {
     fun ignoresUnknownOrShortReports() {
         assertNull(TritonReportParser.parse(byteArrayOf(0x01, 0x02)))
         assertNull(TritonReportParser.parse(ByteArray(18) { if (it == 0) 0x43 else 0 }))
+        assertNull(TritonReportParser.parse(ByteArray(18), length = 19))
     }
 
 }

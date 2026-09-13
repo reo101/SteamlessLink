@@ -111,7 +111,7 @@ pub fn main() !void {
 }
 
 fn openUinput() !i32 {
-    const flags = linux.O{ .ACCMODE = .RDWR, .NONBLOCK = true };
+    const flags = linux.O{ .ACCMODE = .RDWR };
     const rc = linux.open(UINPUT_PATH, flags, 0);
     if (posix.errno(rc) != .SUCCESS) {
         log("steamless-uinput: failed to open /dev/uinput\n");
@@ -222,7 +222,7 @@ fn readExactOrEof(fd: i32, out: *[PACKET_SIZE]u8) !bool {
         switch (posix.errno(rc)) {
             .SUCCESS => {
                 const n: usize = @intCast(rc);
-                if (n == 0) return offset != 0;
+                if (n == 0) return if (offset == 0) false else error.TruncatedPacket;
                 offset += n;
             },
             .INTR => {},

@@ -8,6 +8,7 @@ pub const Error = error{
 
 const REPORT_ID_USB_STATE = 0x42;
 const REPORT_ID_BLE_STATE = 0x45;
+const REPORT_ID_BLE_TIMESTAMP_STATE = 0x47;
 const MIN_BASIC_REPORT_BYTES = 18;
 pub const VIIPER_PACKET_SIZE = 20;
 
@@ -77,7 +78,7 @@ fn parseTriton(report: []const u8) Error!TritonState {
     if (report.len < MIN_BASIC_REPORT_BYTES) return error.ReportTooShort;
 
     const report_id = report[0];
-    if (report_id != REPORT_ID_USB_STATE and report_id != REPORT_ID_BLE_STATE) {
+    if (report_id != REPORT_ID_USB_STATE and report_id != REPORT_ID_BLE_STATE and report_id != REPORT_ID_BLE_TIMESTAMP_STATE) {
         return error.UnsupportedReport;
     }
 
@@ -146,29 +147,31 @@ fn putI16Le(bytes: []u8, offset: usize, value: i16) void {
     bytes[offset + 1] = @truncate(bits >> 8);
 }
 
-test "maps Triton reports to VIIPER packets" {
-    var report = [_]u8{0} ** 64;
-    report[0] = REPORT_ID_BLE_STATE;
-    putU32Le(&report, 2, SteamButtons.A | SteamButtons.DPAD_UP | SteamButtons.MENU);
-    putI16Le(&report, 6, 0);
-    putI16Le(&report, 8, 32767);
-    putI16Le(&report, 10, 100);
-    putI16Le(&report, 12, 0);
-    putI16Le(&report, 14, -200);
-    putI16Le(&report, 16, 1234);
+test "maps current and legacy BLE reports to VIIPER packets" {
+    for ([_]u8{ REPORT_ID_BLE_STATE, REPORT_ID_BLE_TIMESTAMP_STATE }) |report_id| {
+        var report = [_]u8{0} ** 64;
+        report[0] = report_id;
+        putU32Le(&report, 2, SteamButtons.A | SteamButtons.DPAD_UP | SteamButtons.MENU);
+        putI16Le(&report, 6, 0);
+        putI16Le(&report, 8, 32767);
+        putI16Le(&report, 10, 100);
+        putI16Le(&report, 12, 0);
+        putI16Le(&report, 14, -200);
+        putI16Le(&report, 16, 1234);
 
-    var packet = [_]u8{0xaa} ** VIIPER_PACKET_SIZE;
-    try mapTritonToViiper(&report, &packet);
+        var packet = [_]u8{0xaa} ** VIIPER_PACKET_SIZE;
+        try mapTritonToViiper(&report, &packet);
 
-    const expected_buttons = XboxButtons.A | XboxButtons.DPAD_UP | XboxButtons.START;
-    try std.testing.expectEqual(@as(u32, expected_buttons), u32Le(&packet, 0));
-    try std.testing.expectEqual(@as(u8, 0), packet[4]);
-    try std.testing.expectEqual(@as(u8, 255), packet[5]);
-    try std.testing.expectEqual(@as(i16, 100), i16Le(&packet, 6));
-    try std.testing.expectEqual(@as(i16, 0), i16Le(&packet, 8));
-    try std.testing.expectEqual(@as(i16, -200), i16Le(&packet, 10));
-    try std.testing.expectEqual(@as(i16, 1234), i16Le(&packet, 12));
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0 }, packet[14..]);
+        const expected_buttons = XboxButtons.A | XboxButtons.DPAD_UP | XboxButtons.START;
+        try std.testing.expectEqual(@as(u32, expected_buttons), u32Le(&packet, 0));
+        try std.testing.expectEqual(@as(u8, 0), packet[4]);
+        try std.testing.expectEqual(@as(u8, 255), packet[5]);
+        try std.testing.expectEqual(@as(i16, 100), i16Le(&packet, 6));
+        try std.testing.expectEqual(@as(i16, 0), i16Le(&packet, 8));
+        try std.testing.expectEqual(@as(i16, -200), i16Le(&packet, 10));
+        try std.testing.expectEqual(@as(i16, 1234), i16Le(&packet, 12));
+        try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0 }, packet[14..]);
+    }
 }
 
 test "rejects invalid buffers" {

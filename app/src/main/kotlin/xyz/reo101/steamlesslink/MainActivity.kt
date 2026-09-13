@@ -307,7 +307,7 @@ class MainActivity : Activity() {
             .sortedWith(compareBy({ it.vendorId }, { it.productId }, { it.deviceName }))
         appendLine("USB devices (${devices.size}):")
         devices.forEach { device ->
-            val valveMark = if (UsbTritonTransport.isValveDevice(device)) "  <= Valve candidate" else ""
+            val valveMark = if (UsbTritonTransport.isSteamController(device)) "  <= Steam Controller candidate" else ""
             appendLine(
                 "- ${device.deviceName} vid=%04x pid=%04x ifaces=${device.interfaceCount}%s".format(
                     device.vendorId,

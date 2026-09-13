@@ -12,7 +12,7 @@ object TritonReportParser {
     const val MIN_BASIC_REPORT_BYTES = 18
 
     fun parse(report: ByteArray, length: Int = report.size): TritonRawState? {
-        if (length < MIN_BASIC_REPORT_BYTES) return null
+        if (length !in MIN_BASIC_REPORT_BYTES..report.size) return null
         val reportId = report.u8(0)
         if (reportId != REPORT_ID_USB_STATE && reportId != REPORT_ID_BLE_STATE && reportId != REPORT_ID_BLE_TIMESTAMP_STATE) return null
 

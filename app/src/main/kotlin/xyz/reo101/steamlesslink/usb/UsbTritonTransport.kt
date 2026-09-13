@@ -35,7 +35,7 @@ class UsbTritonTransport(
     fun start() {
         val device = findCandidateDevice()
         if (device == null) {
-            onStatus("No Valve USB device found")
+            onStatus("No supported Steam Controller USB device found")
             return
         }
 
@@ -48,7 +48,9 @@ class UsbTritonTransport(
     }
 
     private fun findCandidateDevice(): UsbDevice? =
-        usbManager.deviceList.values.firstOrNull { isValveDevice(it) }
+        usbManager.deviceList.values
+            .filter(::isSteamController)
+            .minWithOrNull(compareBy({ it.productId }, { it.deviceName }))
 
     private fun requestPermission(device: UsbDevice) {
         onStatus("Requesting USB permission for ${device.deviceName}")
@@ -63,14 +65,16 @@ class UsbTritonTransport(
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                 }
-                if (granted && permittedDevice != null) {
+                unregisterPermissionReceiver()
+                if (granted && permittedDevice != null && isSteamController(permittedDevice)) {
                     onStatus("USB permission granted")
                     open(permittedDevice)
                 } else {
-                    onStatus("USB permission denied")
+                    onStatus("USB permission denied or unsupported device")
                 }
             }
         }
+        unregisterPermissionReceiver()
         val filter = IntentFilter(action)
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -180,10 +184,15 @@ class UsbTritonTransport(
         running.set(false)
         lizardExecutor?.shutdownNow()
         executor.shutdownNow()
-        permissionReceiver?.let {
-            runCatching { context.unregisterReceiver(it) }
-        }
+        unregisterPermissionReceiver()
         closeConnectionOnly()
+    }
+
+    private fun unregisterPermissionReceiver() {
+        permissionReceiver?.let { receiver ->
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+        permissionReceiver = null
     }
 
     private fun closeConnectionOnly() {
@@ -200,7 +209,14 @@ class UsbTritonTransport(
 
     companion object {
         const val VALVE_VENDOR_ID = 0x28de
+        const val TRITON_USB_PRODUCT_ID = 0x1302
+        const val TRITON_BLE_PRODUCT_ID = 0x1303
 
-        fun isValveDevice(device: UsbDevice): Boolean = device.vendorId == VALVE_VENDOR_ID
+        fun isSteamController(device: UsbDevice): Boolean =
+            isSteamController(device.vendorId, device.productId)
+
+        internal fun isSteamController(vendorId: Int, productId: Int): Boolean =
+            vendorId == VALVE_VENDOR_ID &&
+                (productId == TRITON_USB_PRODUCT_ID || productId == TRITON_BLE_PRODUCT_ID)
     }
 }
