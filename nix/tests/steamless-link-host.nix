@@ -338,6 +338,14 @@ let
     '';
   };
 
+  extendedFixture = pkgs.runCommand "extended-gamepad-fixture.json" {
+    nativeBuildInputs = [ (pkgs.zig_0_16 or pkgs.zig) ];
+  } ''
+    export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+    zig run ${../../core/src}/generate_extended_fixture.zig -- "$out"
+  '';
+  extendedTest = "${lib.getExe pkgs.python3} ${./extended-gamepad.py}";
+
   baseNode =
     host:
     { lib, ... }:
@@ -368,6 +376,7 @@ in
           steamlessLinkHostModule
         ];
 
+        boot.kernelModules = [ "hid-sensor-hub" "hid-sensor-accel-3d" "hid-sensor-gyro-3d" ];
         users.groups.steam = { };
         users.users.steam = {
           isSystemUser = true;
@@ -428,5 +437,18 @@ in
     steam.succeed("${lib.getExe verifyGenericGamepad}")
     phone.wait_until_succeeds("test -e /tmp/generic-client-done -o -e /tmp/generic-client-failed")
     phone.succeed("test -e /tmp/generic-client-done")
+
+    phone.succeed("${extendedTest} client ${extendedFixture} > /tmp/extended-client.log 2>&1 &")
+    try:
+        phone.wait_until_succeeds("test -e /tmp/extended-ready", timeout=15)
+        steam.wait_until_succeeds("test $(ls /sys/bus/iio/devices/iio:device*/name | wc -l) -eq 2", timeout=15)
+        steam.succeed("${extendedTest} verify ${extendedFixture}", timeout=15)
+    finally:
+        print(phone.execute("cat /tmp/extended-client.log")[1])
+        print(steam.execute("journalctl -u steamless-link-host --no-pager -n 60")[1])
+        print(steam.execute("dmesg | tail -40")[1])
+        phone.succeed("touch /tmp/extended-stop")
+    phone.wait_until_succeeds("test -e /tmp/extended-done", timeout=10)
+    steam.wait_until_succeeds("test $(ls /sys/bus/iio/devices/iio:device*/name 2>/dev/null | wc -l) -eq 0", timeout=10)
   '';
 }

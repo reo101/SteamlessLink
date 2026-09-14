@@ -12,6 +12,10 @@ pub const REPORT_ID_BLE_TIMESTAMP_STATE = 0x47;
 pub const MIN_BASIC_REPORT_BYTES = 18;
 pub const XBOX360_PACKET_SIZE = 20;
 
+// SDL steam/controller_constants.h: SetSettingsValues, lizard mode and IMU mode.
+pub const EXTENDED_BLE_SETTINGS = [_]u8{ 0x87, 6, 9, 0, 0, 48, 0x18, 0 };
+pub const EXTENDED_USB_SETTINGS = [_]u8{1} ++ EXTENDED_BLE_SETTINGS ++ [_]u8{0} ** (64 - 1 - EXTENDED_BLE_SETTINGS.len);
+
 pub const Buttons = struct {
     pub const A: u32 = 0x0000_0001;
     pub const B: u32 = 0x0000_0002;
@@ -48,6 +52,15 @@ const XboxButtons = struct {
     const Y: u32 = 0x8000;
 };
 
+// Field layouts/scales: SDL src/joystick/hidapi/steam/controller_structs.h
+// (TritonMTUNoQuat_t and TritonMTUNoQuat32TS_t).
+pub const Touchpad = struct { x: i16, y: i16, pressure: u16 };
+pub const Imu = struct {
+    timestamp_us: u32,
+    accel: [3]i16,
+    gyro: [3]i16,
+};
+
 pub const State = struct {
     buttons: u32,
     left_trigger: i16,
@@ -56,6 +69,8 @@ pub const State = struct {
     left_stick_y: i16,
     right_stick_x: i16,
     right_stick_y: i16,
+    pads: ?[2]Touchpad,
+    imu: ?Imu,
 };
 
 pub fn mapTritonToXbox360(report: []const u8, out_packet: []u8) Error!void {
@@ -82,6 +97,8 @@ pub fn parse(report: []const u8) Error!State {
         return error.UnsupportedReport;
     }
 
+    const timestamped = report_id == REPORT_ID_BLE_TIMESTAMP_STATE;
+    const pad_offset: usize = if (timestamped) 20 else 18;
     return .{
         .buttons = u32Le(report, 2),
         .left_trigger = i16Le(report, 6),
@@ -90,6 +107,15 @@ pub fn parse(report: []const u8) Error!State {
         .left_stick_y = i16Le(report, 12),
         .right_stick_x = i16Le(report, 14),
         .right_stick_y = i16Le(report, 16),
+        .pads = if (report.len >= pad_offset + 12) .{
+            .{ .x = i16Le(report, pad_offset), .y = i16Le(report, pad_offset + 2), .pressure = @bitCast(i16Le(report, pad_offset + 4)) },
+            .{ .x = i16Le(report, pad_offset + 6), .y = i16Le(report, pad_offset + 8), .pressure = @bitCast(i16Le(report, pad_offset + 10)) },
+        } else null,
+        .imu = if (report.len >= 46) .{
+            .timestamp_us = if (timestamped) @as(u32, @as(u16, @bitCast(i16Le(report, 32)))) * 32 else u32Le(report, 30),
+            .accel = .{ i16Le(report, 34), i16Le(report, 36), i16Le(report, 38) },
+            .gyro = .{ i16Le(report, 40), i16Le(report, 42), i16Le(report, 44) },
+        } else null,
     };
 }
 
@@ -171,6 +197,25 @@ test "maps current and legacy BLE reports to Xbox 360 packets" {
         try std.testing.expectEqual(@as(i16, -200), i16Le(&packet, 10));
         try std.testing.expectEqual(@as(i16, 1234), i16Le(&packet, 12));
         try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0 }, packet[14..]);
+    }
+}
+
+test "optional pads and IMU require complete fields and preserve timestamp units" {
+    for ([_]u8{ REPORT_ID_USB_STATE, REPORT_ID_BLE_STATE, REPORT_ID_BLE_TIMESTAMP_STATE }) |id| {
+        var report = [_]u8{0} ** 46;
+        report[0] = id;
+        if (id == REPORT_ID_BLE_TIMESTAMP_STATE) {
+            std.mem.writeInt(u16, report[32..34], 65535, .little);
+        } else {
+            std.mem.writeInt(u32, report[30..34], 0xfedcba98, .little);
+        }
+        for (MIN_BASIC_REPORT_BYTES..report.len) |length| {
+            const state = try parse(report[0..length]);
+            try std.testing.expect(state.imu == null);
+            try std.testing.expectEqual(length >= (if (id == REPORT_ID_BLE_TIMESTAMP_STATE) @as(usize, 32) else 30), state.pads != null);
+        }
+        const state = try parse(&report);
+        try std.testing.expectEqual(if (id == REPORT_ID_BLE_TIMESTAMP_STATE) @as(u32, 65535 * 32) else 0xfedcba98, state.imu.?.timestamp_us);
     }
 }
 

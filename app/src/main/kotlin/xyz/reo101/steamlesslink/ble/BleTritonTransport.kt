@@ -13,6 +13,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
+import xyz.reo101.steamlesslink.protocol.ExtendedGamepadProtocol
 import xyz.reo101.steamlesslink.util.hex
 import xyz.reo101.steamlesslink.util.u8
 import java.io.Closeable
@@ -30,6 +31,7 @@ class BleTritonTransport(
     private val onReport: (ByteArray, Int) -> Unit,
     private val onStatus: (String) -> Unit,
     private val enableLizardModeRefresh: Boolean = true,
+    private val enableImu: Boolean = false,
 ) : Closeable {
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter = bluetoothManager.adapter
@@ -318,7 +320,7 @@ class BleTritonTransport(
         // USB feature report would be: 01 87 03 09 00 00 ...
         // Triton BLE feature writes omit the HID report id and do not need USB
         // feature padding, so send just the SetSettingsValues payload.
-        val bleValue = byteArrayOf(
+        val bleValue = if (enableImu) ExtendedGamepadProtocol.EXTENDED_BLE_SETTINGS else byteArrayOf(
             0x87.toByte(), // ID_SET_SETTINGS_VALUES
             0x03, // sizeof(ControllerSetting)
             0x09, // SETTING_LIZARD_MODE

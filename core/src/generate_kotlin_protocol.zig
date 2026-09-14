@@ -1,4 +1,5 @@
 const std = @import("std");
+const extended_gamepad = @import("extended_gamepad.zig");
 const generic_gamepad = @import("generic_gamepad.zig");
 const protocol = @import("protocol.zig");
 const triton = @import("triton.zig");
@@ -12,21 +13,24 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(init.io, &buffer);
     try writer.interface.print(
-        \\// Generated from `core/src/generic_gamepad.zig`, `protocol.zig`, and `triton.zig`. Do not edit.
+        \\// Generated from `core/src/{{extended_gamepad,generic_gamepad,protocol,triton}}.zig`. Do not edit.
         \\package xyz.reo101.steamlesslink.protocol
         \\
         \\internal object RawProtocol {{
-        \\    const val FRAME_INPUT = 0x{x:0>2}
-        \\    const val FRAME_GET_REPORT_REPLY = 0x{x:0>2}
-        \\    const val FRAME_SET_REPORT_REPLY = 0x{x:0>2}
-        \\    const val FRAME_DEVICE_INFO = 0x{x:0>2}
-        \\    const val FRAME_GET_IROH_TICKET = 0x{x:0>2}
-        \\    const val FRAME_OUTPUT = 0x{x:0>2}
-        \\    const val FRAME_GET_REPORT = 0x{x:0>2}
-        \\    const val FRAME_SET_REPORT = 0x{x:0>2}
-        \\    const val FRAME_IROH_TICKET = 0x{x:0>2}
+    , .{});
+    inline for (@typeInfo(protocol.FrameType).@"enum".fields) |field| {
+        var name: [field.name.len]u8 = undefined;
+        for (field.name, 0..) |byte, index| name[index] = std.ascii.toUpper(byte);
+        try writer.interface.print("\n    const val FRAME_{s} = 0x{x:0>2}", .{ name, field.value });
+    }
+    inline for (.{ "DEVICE_FRAME_HEADER_SIZE", "DEVICE_FRAME_TYPE_OFFSET", "DEVICE_BUNDLE_HEADER_SIZE", "DEVICE_BUNDLE_ENTRY_SIZE" }) |name| {
+        try writer.interface.print("\n    const val {s} = {d}", .{ name, @field(protocol, name) });
+    }
+    try writer.interface.print(
+        \\
         \\    const val FRAME_HEADER_SIZE = {d}
         \\    const val MAX_FRAME_PAYLOAD = {d}
+        \\    const val MAX_DEVICES = {d}
         \\    const val MAX_REPORT_DESCRIPTOR_SIZE = {d}
         \\    const val MAX_DEVICE_NAME_SIZE = {d}
         \\    const val DEVICE_INFO_HEADER_SIZE = {d}
@@ -35,6 +39,19 @@ pub fn main(init: std.process.Init) !void {
         \\        require(type in 0..0xff)
         \\        val safeLength = payloadLength.coerceIn(0, MAX_FRAME_PAYLOAD)
         \\        return (type shl 16) or safeLength
+        \\    }}
+        \\
+        \\    fun encodeDeviceBundle(devices: List<ByteArray>): ByteArray {{
+        \\        require(devices.size in 1..MAX_DEVICES)
+        \\        val length = DEVICE_BUNDLE_HEADER_SIZE + devices.sumOf {{ DEVICE_BUNDLE_ENTRY_SIZE + it.size }}
+        \\        require(length <= MAX_FRAME_PAYLOAD)
+        \\        val buffer = java.nio.ByteBuffer.allocate(length).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        \\        buffer.put(devices.size.toByte())
+        \\        for (info in devices) {{
+        \\            require(info.size in 1..MAX_FRAME_PAYLOAD)
+        \\            buffer.putShort(info.size.toShort()).put(info)
+        \\        }}
+        \\        return buffer.array()
         \\    }}
         \\
         \\    fun encodeDeviceInfo(
@@ -84,17 +101,9 @@ pub fn main(init: std.process.Init) !void {
         \\    const val INPUT_REPORT_SIZE = {d}
         \\    val REPORT_DESCRIPTOR = byteArrayOf(
     , .{
-        protocol.FRAME_INPUT,
-        protocol.FRAME_GET_REPORT_REPLY,
-        protocol.FRAME_SET_REPORT_REPLY,
-        protocol.FRAME_DEVICE_INFO,
-        protocol.FRAME_GET_IROH_TICKET,
-        protocol.FRAME_OUTPUT,
-        protocol.FRAME_GET_REPORT,
-        protocol.FRAME_SET_REPORT,
-        protocol.FRAME_IROH_TICKET,
         protocol.FRAME_HEADER_SIZE,
         protocol.MAX_FRAME_PAYLOAD,
+        protocol.MAX_DEVICES,
         protocol.MAX_REPORT_DESCRIPTOR_SIZE,
         protocol.MAX_DEVICE_NAME_SIZE,
         protocol.DEVICE_INFO_HEADER_SIZE,
@@ -112,5 +121,37 @@ pub fn main(init: std.process.Init) !void {
         try writer.interface.print("0x{x:0>2}.toByte()", .{byte});
     }
     try writer.interface.writeAll("\n    )\n}\n");
+    try writer.interface.print(
+        \\
+        \\internal object ExtendedGamepadProtocol {{
+        \\    const val PACKET_SIZE = {d}
+        \\    const val SENSOR_SIZE = {d}
+    , .{ extended_gamepad.PACKET_SIZE, extended_gamepad.SENSOR_SIZE });
+    inline for (@typeInfo(extended_gamepad.Sensor).@"struct".decls) |decl| {
+        try writer.interface.print("\n    const val SENSOR_{s} = {d}", .{ decl.name, @field(extended_gamepad.Sensor, decl.name) });
+    }
+    try writer.interface.writeAll("\n    val REPORT_SIZES = intArrayOf(");
+    for (extended_gamepad.REPORT_SIZES) |size| try writer.interface.print("{d}, ", .{size});
+    try writer.interface.writeAll(")\n    val REPORT_DEVICES = intArrayOf(");
+    for (extended_gamepad.REPORT_DEVICES) |device| try writer.interface.print("{d}, ", .{device});
+    try writer.interface.writeAll(")\n    val NAMES = arrayOf(");
+    for (extended_gamepad.NAMES) |name| try writer.interface.print("\n        \"{s}\",", .{name});
+    try writer.interface.writeAll("\n    )\n    val DESCRIPTORS = arrayOf(\n");
+    for (extended_gamepad.DESCRIPTORS) |descriptor| {
+        try writer.interface.writeAll("        byteArrayOf(");
+        for (descriptor, 0..) |byte, index| {
+            if (index != 0) try writer.interface.writeAll(", ");
+            if (index % 8 == 0) try writer.interface.writeAll("\n            ");
+            try writer.interface.print("0x{x:0>2}.toByte()", .{byte});
+        }
+        try writer.interface.writeAll("\n        ),\n");
+    }
+    try writer.interface.writeAll("    )\n");
+    inline for (.{ "EXTENDED_BLE_SETTINGS", "EXTENDED_USB_SETTINGS" }) |name| {
+        try writer.interface.print("    val {s} = byteArrayOf(", .{name});
+        for (@field(triton, name)) |byte| try writer.interface.print("0x{x:0>2}.toByte(), ", .{byte});
+        try writer.interface.writeAll(")\n");
+    }
+    try writer.interface.writeAll("}\n");
     try writer.interface.flush();
 }

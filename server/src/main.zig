@@ -27,15 +27,6 @@ const BUS_USB: u16 = 0x03;
 const VALVE_VID: u32 = 0x28de;
 const TRITON_BLE_PID: u32 = 0x1303;
 
-const FRAME_INPUT = protocol.FRAME_INPUT;
-const FRAME_GET_REPORT_REPLY = protocol.FRAME_GET_REPORT_REPLY;
-const FRAME_SET_REPORT_REPLY = protocol.FRAME_SET_REPORT_REPLY;
-const FRAME_DEVICE_INFO = protocol.FRAME_DEVICE_INFO;
-const FRAME_GET_IROH_TICKET = protocol.FRAME_GET_IROH_TICKET;
-const FRAME_OUTPUT = protocol.FRAME_OUTPUT;
-const FRAME_GET_REPORT = protocol.FRAME_GET_REPORT;
-const FRAME_SET_REPORT = protocol.FRAME_SET_REPORT;
-const FRAME_IROH_TICKET = protocol.FRAME_IROH_TICKET;
 const MAX_FRAME_PAYLOAD = protocol.MAX_FRAME_PAYLOAD;
 const DEVICE_INFO_HEADER_SIZE = protocol.DEVICE_INFO_HEADER_SIZE;
 
@@ -278,7 +269,7 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
 
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
     var pending_frame: ?Frame = (try readFrame(conn_fd, &payload_buf)) orelse return;
-    if (pending_frame.?.frame_type == FRAME_GET_IROH_TICKET) {
+    if (pending_frame.?.frame_type == .get_iroh_ticket) {
         if (pending_frame.?.payload.len != 0) {
             log(config, .warning, "invalid Iroh ticket request", .{});
             return;
@@ -291,7 +282,7 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
             log(config, .warning, "Iroh ticket unavailable: {s}", .{@errorName(err)});
             return;
         };
-        try sendFrame(conn_fd, FRAME_IROH_TICKET, ticket);
+        try sendFrame(conn_fd, .iroh_ticket, ticket);
         log(config, .info, "served Iroh ticket to bootstrap client", .{});
         return;
     }
@@ -299,8 +290,14 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
     replaceActiveClient(conn_fd);
     active = true;
 
+    const bundled = pending_frame.?.frame_type == .device_bundle;
+    var infos: [protocol.MAX_DEVICES]DeviceInfo = undefined;
+    var bundle_infos: []DeviceInfo = &.{};
     var device_info: ?DeviceInfo = null;
-    if (pending_frame.?.frame_type == FRAME_DEVICE_INFO) {
+    if (bundled) {
+        bundle_infos = protocol.decodeDeviceBundle(pending_frame.?.payload, &infos) orelse return error.InvalidDeviceBundle;
+        pending_frame = null;
+    } else if (pending_frame.?.frame_type == .device_info) {
         const info = decodeDeviceInfo(pending_frame.?.payload) orelse {
             log(config, .warning, "invalid device-info frame", .{});
             return;
@@ -313,12 +310,29 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
         pending_frame = null;
     }
 
-    var dev = try UhidDevice.open(config, device_info);
-    defer dev.destroy();
+    var devices: [protocol.MAX_DEVICES]UhidDevice = undefined;
+    var device_count: usize = 0;
+    defer for (devices[0..device_count]) |*dev| dev.destroy();
+    if (bundled) {
+        for (bundle_infos, 0..) |info, slot| {
+            var slot_config = config.*;
+            var phys: [64]u8 = undefined;
+            var uniq: [64]u8 = undefined;
+            slot_config.identity.phys = try std.fmt.bufPrint(&phys, "steamlesslink/input{d}", .{slot});
+            slot_config.identity.uniq = try std.fmt.bufPrint(&uniq, "steamlesslink-extended-{d}", .{slot});
+            devices[slot] = try UhidDevice.open(&slot_config, info);
+            device_count += 1;
+        }
+        try sendFrame(conn_fd, .device_bundle_ready, &.{@intCast(device_count)});
+    } else {
+        devices[0] = try UhidDevice.open(config, device_info);
+        device_count = 1;
+    }
 
     var stop = AtomicBool.init(false);
     var reader_args = UhidReaderArgs{
-        .dev = &dev,
+        .devices = devices[0..device_count],
+        .bundled = bundled,
         .conn_fd = conn_fd,
         .stop = &stop,
         .config = config,
@@ -335,7 +349,7 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
 
     var last_log_ns: i128 = 0;
     while (!stop.load(.acquire)) {
-        const frame = if (pending_frame) |value| blk: {
+        var frame = if (pending_frame) |value| blk: {
             pending_frame = null;
             break :blk value;
         } else blk: {
@@ -345,8 +359,22 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
             };
             break :blk maybe_frame orelse break;
         };
+        var slot: usize = 0;
+        if (frame.frame_type == .device_frame) {
+            if (!bundled or frame.payload.len < protocol.DEVICE_FRAME_HEADER_SIZE or frame.payload[0] >= device_count) return error.InvalidDeviceFrame;
+            slot = frame.payload[0];
+            frame = .{
+                .frame_type = @enumFromInt(frame.payload[protocol.DEVICE_FRAME_TYPE_OFFSET]),
+                .payload = frame.payload[protocol.DEVICE_FRAME_HEADER_SIZE..],
+            };
+            switch (frame.frame_type) {
+                .input, .get_report_reply, .set_report_reply => {},
+                else => return error.InvalidDeviceFrame,
+            }
+        } else if (bundled) return error.ExpectedDeviceFrame;
+        const dev = &devices[slot];
         switch (frame.frame_type) {
-            FRAME_INPUT => {
+            .input => {
                 reports += 1;
                 const now = monotonicNs();
                 if (now - last_log_ns >= std.time.ns_per_s) {
@@ -362,29 +390,39 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
                 }
                 try dev.inputReport(frame.payload);
             },
-            FRAME_GET_REPORT_REPLY => {
+            .get_report_reply => {
                 if (frame.payload.len < 6) continue;
                 const request_id = readU32Le(frame.payload, 0);
                 const err = readU16Le(frame.payload, 4);
                 try dev.getReportReply(request_id, err, frame.payload[6..]);
             },
-            FRAME_SET_REPORT_REPLY => {
+            .set_report_reply => {
                 if (frame.payload.len < 6) continue;
                 const request_id = readU32Le(frame.payload, 0);
                 const err = readU16Le(frame.payload, 4);
                 try dev.setReportReply(request_id, err);
             },
-            FRAME_DEVICE_INFO => log(config, .warning, "ignoring late device-info frame", .{}),
-            else => log(config, .debug, "ignoring client frame type=0x{x:0>2} len={d}", .{ frame.frame_type, frame.payload.len }),
+            .device_info => log(config, .warning, "ignoring late device-info frame", .{}),
+            else => log(config, .debug, "ignoring client frame type=0x{x:0>2} len={d}", .{ @intFromEnum(frame.frame_type), frame.payload.len }),
         }
     }
 }
 
 const UhidReaderArgs = struct {
-    dev: *UhidDevice,
+    devices: []UhidDevice,
+    bundled: bool,
     conn_fd: c_int,
     stop: *AtomicBool,
     config: *const Config,
+
+    fn send(args: *UhidReaderArgs, slot: usize, frame_type: protocol.FrameType, payload: []const u8) !void {
+        if (!args.bundled) return sendFrame(args.conn_fd, frame_type, payload);
+        var buffer: [protocol.DEVICE_FRAME_HEADER_SIZE + 6 + UHID_DATA_MAX]u8 = undefined;
+        buffer[0] = @intCast(slot);
+        buffer[protocol.DEVICE_FRAME_TYPE_OFFSET] = @intFromEnum(frame_type);
+        @memcpy(buffer[protocol.DEVICE_FRAME_HEADER_SIZE..][0..payload.len], payload);
+        try sendFrame(args.conn_fd, .device_frame, buffer[0 .. protocol.DEVICE_FRAME_HEADER_SIZE + payload.len]);
+    }
 };
 
 fn uhidReaderThread(args: *UhidReaderArgs) void {
@@ -401,91 +439,90 @@ fn uhidReader(args: *UhidReaderArgs) !void {
     var control_events: u64 = 0;
     var event_buf: [UHID_EVENT_SIZE]u8 = undefined;
     while (!args.stop.load(.acquire)) {
-        var fds = [_]c.struct_pollfd{.{
-            .fd = args.dev.fd,
-            .events = c.POLLIN,
-            .revents = 0,
-        }};
-        const poll_rc = c.poll(&fds, fds.len, 250);
+        var pollfds: [protocol.MAX_DEVICES]c.struct_pollfd = undefined;
+        const fds = pollfds[0..args.devices.len];
+        for (args.devices, fds) |dev, *fd| fd.* = .{ .fd = dev.fd, .events = c.POLLIN, .revents = 0 };
+        const poll_rc = c.poll(fds.ptr, @intCast(fds.len), 250);
         switch (std.c.errno(poll_rc)) {
             .SUCCESS => {},
             .INTR => continue,
             else => return error.PollFailed,
         }
         if (poll_rc == 0) continue;
-        if ((fds[0].revents & (c.POLLERR | c.POLLHUP | c.POLLNVAL)) != 0) return;
-        if ((fds[0].revents & c.POLLIN) == 0) continue;
+        for (fds, 0..) |fd, slot| {
+            if ((fd.revents & (c.POLLERR | c.POLLHUP | c.POLLNVAL)) != 0) return;
+            if ((fd.revents & c.POLLIN) == 0) continue;
 
-        const read = try readFd(args.dev.fd, &event_buf);
-        if (read < 4) continue;
-        const event_type = readU32Le(event_buf[0..read], 0);
-        const payload = event_buf[4..read];
-        switch (event_type) {
-            UHID_START => {
-                const flags = if (payload.len >= 8) readU64Le(payload, 0) else 0;
-                log(args.config, .info, "UHID start flags=0x{x}", .{flags});
-            },
-            UHID_STOP, UHID_OPEN, UHID_CLOSE => log(args.config, .info, "UHID event type={d}", .{event_type}),
-            UHID_OUTPUT => {
-                if (payload.len < UHID_DATA_MAX + 3) continue;
-                control_events += 1;
-                const size = @min(readU16Le(payload, UHID_DATA_MAX), UHID_DATA_MAX);
-                const report_type = payload[UHID_DATA_MAX + 2];
-                const data = payload[0..size];
-                logControlEvent(args.config, control_events, "UHID output rtype={d} len={d}", .{ report_type, size });
-                var frame_payload: [1 + UHID_DATA_MAX]u8 = undefined;
-                frame_payload[0] = report_type;
-                @memcpy(frame_payload[1 .. 1 + data.len], data);
-                try sendFrame(args.conn_fd, FRAME_OUTPUT, frame_payload[0 .. 1 + data.len]);
-            },
-            UHID_GET_REPORT => {
-                if (payload.len < 6) continue;
-                control_events += 1;
-                const request_id = readU32Le(payload, 0);
-                const report_number = payload[4];
-                const report_type = payload[5];
-                logControlEvent(
-                    args.config,
-                    control_events,
-                    "UHID get_report id={d} rnum=0x{x:0>2} rtype={d}",
-                    .{ request_id, report_number, report_type },
-                );
-                var frame_payload: [6]u8 = undefined;
-                writeU32Le(&frame_payload, 0, request_id);
-                frame_payload[4] = report_number;
-                frame_payload[5] = report_type;
-                try sendFrame(args.conn_fd, FRAME_GET_REPORT, &frame_payload);
-            },
-            UHID_SET_REPORT => {
-                if (payload.len < 8) continue;
-                control_events += 1;
-                const request_id = readU32Le(payload, 0);
-                const report_number = payload[4];
-                const report_type = payload[5];
-                const size = @min(readU16Le(payload, 6), @as(u16, UHID_DATA_MAX));
-                const data_end = @min(@as(usize, 8) + size, payload.len);
-                const data = payload[8..data_end];
-                logControlEvent(
-                    args.config,
-                    control_events,
-                    "UHID set_report id={d} rnum=0x{x:0>2} rtype={d} len={d}",
-                    .{ request_id, report_number, report_type, data.len },
-                );
-                var frame_payload: [6 + UHID_DATA_MAX]u8 = undefined;
-                writeU32Le(&frame_payload, 0, request_id);
-                frame_payload[4] = report_number;
-                frame_payload[5] = report_type;
-                @memcpy(frame_payload[6 .. 6 + data.len], data);
-                try sendFrame(args.conn_fd, FRAME_SET_REPORT, frame_payload[0 .. 6 + data.len]);
-            },
-            else => log(args.config, .debug, "UHID event type={d}", .{event_type}),
+            const read = try readFd(fd.fd, &event_buf);
+            if (read < 4) continue;
+            const event_type = readU32Le(event_buf[0..read], 0);
+            const payload = event_buf[4..read];
+            switch (event_type) {
+                UHID_START => {
+                    const flags = if (payload.len >= 8) readU64Le(payload, 0) else 0;
+                    log(args.config, .info, "UHID start flags=0x{x}", .{flags});
+                },
+                UHID_STOP, UHID_OPEN, UHID_CLOSE => log(args.config, .info, "UHID event type={d}", .{event_type}),
+                UHID_OUTPUT => {
+                    if (payload.len < UHID_DATA_MAX + 3) continue;
+                    control_events += 1;
+                    const size = @min(readU16Le(payload, UHID_DATA_MAX), UHID_DATA_MAX);
+                    const report_type = payload[UHID_DATA_MAX + 2];
+                    const data = payload[0..size];
+                    logControlEvent(args.config, control_events, "UHID output rtype={d} len={d}", .{ report_type, size });
+                    var frame_payload: [1 + UHID_DATA_MAX]u8 = undefined;
+                    frame_payload[0] = report_type;
+                    @memcpy(frame_payload[1 .. 1 + data.len], data);
+                    try args.send(slot, .output, frame_payload[0 .. 1 + data.len]);
+                },
+                UHID_GET_REPORT => {
+                    if (payload.len < 6) continue;
+                    control_events += 1;
+                    const request_id = readU32Le(payload, 0);
+                    const report_number = payload[4];
+                    const report_type = payload[5];
+                    logControlEvent(
+                        args.config,
+                        control_events,
+                        "UHID get_report id={d} rnum=0x{x:0>2} rtype={d}",
+                        .{ request_id, report_number, report_type },
+                    );
+                    var frame_payload: [6]u8 = undefined;
+                    writeU32Le(&frame_payload, 0, request_id);
+                    frame_payload[4] = report_number;
+                    frame_payload[5] = report_type;
+                    try args.send(slot, .get_report, &frame_payload);
+                },
+                UHID_SET_REPORT => {
+                    if (payload.len < 8) continue;
+                    control_events += 1;
+                    const request_id = readU32Le(payload, 0);
+                    const report_number = payload[4];
+                    const report_type = payload[5];
+                    const size = @min(readU16Le(payload, 6), @as(u16, UHID_DATA_MAX));
+                    const data_end = @min(@as(usize, 8) + size, payload.len);
+                    const data = payload[8..data_end];
+                    logControlEvent(
+                        args.config,
+                        control_events,
+                        "UHID set_report id={d} rnum=0x{x:0>2} rtype={d} len={d}",
+                        .{ request_id, report_number, report_type, data.len },
+                    );
+                    var frame_payload: [6 + UHID_DATA_MAX]u8 = undefined;
+                    writeU32Le(&frame_payload, 0, request_id);
+                    frame_payload[4] = report_number;
+                    frame_payload[5] = report_type;
+                    @memcpy(frame_payload[6 .. 6 + data.len], data);
+                    try args.send(slot, .set_report, frame_payload[0 .. 6 + data.len]);
+                },
+                else => log(args.config, .debug, "UHID event type={d}", .{event_type}),
+            }
         }
     }
 }
 
 const UhidDevice = struct {
     fd: c_int,
-    identity: UhidIdentity,
     destroyed: bool = false,
 
     fn open(config: *const Config, device_info: ?DeviceInfo) !UhidDevice {
@@ -503,9 +540,9 @@ const UhidDevice = struct {
         defer std.heap.page_allocator.free(path_z);
         const fd = c.open(path_z.ptr, c.O_RDWR | c.O_CLOEXEC);
         if (std.c.errno(fd) != .SUCCESS) return error.UhidOpenFailed;
-        var dev = UhidDevice{ .fd = fd, .identity = identity };
+        var dev = UhidDevice{ .fd = fd };
         errdefer closeFd(fd);
-        try dev.create(descriptor);
+        try dev.create(identity, descriptor);
         log(
             config,
             .info,
@@ -515,18 +552,18 @@ const UhidDevice = struct {
         return dev;
     }
 
-    fn create(dev: *UhidDevice, descriptor: []const u8) !void {
+    fn create(dev: *UhidDevice, identity: UhidIdentity, descriptor: []const u8) !void {
         if (descriptor.len == 0 or descriptor.len > UHID_DATA_MAX) return error.InvalidReportDescriptor;
         var payload: [UHID_CREATE2_SIZE]u8 = @splat(0);
-        copyZBytes(payload[0..128], dev.identity.name);
-        copyZBytes(payload[128..192], dev.identity.phys);
-        copyZBytes(payload[192..256], dev.identity.uniq);
+        copyZBytes(payload[0..128], identity.name);
+        copyZBytes(payload[128..192], identity.phys);
+        copyZBytes(payload[192..256], identity.uniq);
         writeU16Le(&payload, 256, @intCast(descriptor.len));
-        writeU16Le(&payload, 258, dev.identity.bus);
-        writeU32Le(&payload, 260, dev.identity.vendor);
-        writeU32Le(&payload, 264, dev.identity.product);
-        writeU32Le(&payload, 268, dev.identity.version);
-        writeU32Le(&payload, 272, dev.identity.country);
+        writeU16Le(&payload, 258, identity.bus);
+        writeU32Le(&payload, 260, identity.vendor);
+        writeU32Le(&payload, 264, identity.product);
+        writeU32Le(&payload, 268, identity.version);
+        writeU32Le(&payload, 272, identity.country);
         @memcpy(payload[276 .. 276 + descriptor.len], descriptor);
         try dev.writeEvent(UHID_CREATE2, &payload);
     }
@@ -573,7 +610,7 @@ const UhidDevice = struct {
     }
 };
 
-fn sendFrame(fd: c_int, frame_type: u8, payload: []const u8) !void {
+fn sendFrame(fd: c_int, frame_type: protocol.FrameType, payload: []const u8) !void {
     var header: [protocol.FRAME_HEADER_SIZE]u8 = undefined;
     const safe_len = protocol.encodeFrameHeader(&header, frame_type, payload.len);
     try writeAllFd(fd, &header);

@@ -14,6 +14,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import java.io.Closeable
 import java.util.concurrent.Executors
+import xyz.reo101.steamlesslink.protocol.ExtendedGamepadProtocol
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -22,6 +23,7 @@ class UsbTritonTransport(
     private val context: Context,
     private val onReport: (ByteArray, Int) -> Unit,
     private val onStatus: (String) -> Unit,
+    private val enableImu: Boolean = false,
 ) : Closeable {
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val running = AtomicBoolean(false)
@@ -160,13 +162,12 @@ class UsbTritonTransport(
     }
 
     private fun disableLizardMode(openedConnection: UsbDeviceConnection, interfaceId: Int): Boolean {
-        val report = ByteArray(64)
-        report[0] = 0x01 // feature report id
-        report[1] = 0x87.toByte() // ID_SET_SETTINGS_VALUES
-        report[2] = 0x03 // sizeof(ControllerSetting)
-        report[3] = 0x09 // SETTING_LIZARD_MODE
-        report[4] = 0x00 // LIZARD_MODE_OFF, little endian u16
-        report[5] = 0x00
+        val report = if (enableImu) ExtendedGamepadProtocol.EXTENDED_USB_SETTINGS else ByteArray(64).also {
+            it[0] = 0x01 // feature report id
+            it[1] = 0x87.toByte() // ID_SET_SETTINGS_VALUES
+            it[2] = 3
+            it[3] = 0x09 // SETTING_LIZARD_MODE; remaining bytes are LIZARD_MODE_OFF
+        }
         val sent = openedConnection.controlTransfer(
             0x21, // host-to-device | class | interface
             0x09, // SET_REPORT

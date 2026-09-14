@@ -1,7 +1,7 @@
 package xyz.reo101.steamlesslink.protocol
 
 internal object NativeProtocol {
-    private val loadError: Throwable? = runCatching {
+    val loadError: Throwable? = runCatching {
         System.loadLibrary("steamless_protocol")
     }.exceptionOrNull()
 
@@ -47,6 +47,18 @@ internal object NativeProtocol {
             false
         }
     }
+
+    fun tryMapTritonToExtendedGamepad(report: ByteArray, length: Int, outPacket: ByteArray): Boolean {
+        if (!isAvailable) return false
+        return try {
+            nativeMapTritonToExtendedGamepad(report, length, outPacket)
+        } catch (_: LinkageError) {
+            disabled = true
+            false
+        }
+    }
+
+    private external fun nativeMapTritonToExtendedGamepad(report: ByteArray, length: Int, outPacket: ByteArray): Boolean
 
     private external fun nativeMapTritonToXbox360(
         report: ByteArray,

@@ -22,15 +22,30 @@
 const std = @import("std");
 const Io = std.Io;
 
-pub const FRAME_INPUT: u8 = 0x01;
-pub const FRAME_GET_REPORT_REPLY: u8 = 0x02;
-pub const FRAME_SET_REPORT_REPLY: u8 = 0x03;
-pub const FRAME_DEVICE_INFO: u8 = 0x04;
-pub const FRAME_GET_IROH_TICKET: u8 = 0x05;
-pub const FRAME_OUTPUT: u8 = 0x81;
-pub const FRAME_GET_REPORT: u8 = 0x82;
-pub const FRAME_SET_REPORT: u8 = 0x83;
-pub const FRAME_IROH_TICKET: u8 = 0x85;
+pub const FrameType = enum(u8) {
+    input = 0x01,
+    get_report_reply = 0x02,
+    set_report_reply = 0x03,
+    device_info = 0x04,
+    get_iroh_ticket = 0x05,
+    device_frame = 0x06,
+    device_bundle = 0x07,
+    output = 0x81,
+    get_report = 0x82,
+    set_report = 0x83,
+    iroh_ticket = 0x85,
+    device_bundle_ready = 0x87,
+    // Preserve unknown wire values so receivers can ignore future frame types.
+    _,
+};
+pub const DeviceFrameHeader = packed struct { device: u8, frame_type: FrameType };
+pub const DeviceBundleHeader = packed struct { count: u8 };
+pub const DeviceBundleEntry = packed struct { info_length: u16 };
+pub const DEVICE_FRAME_HEADER_SIZE = @divExact(@bitSizeOf(DeviceFrameHeader), 8);
+pub const DEVICE_FRAME_TYPE_OFFSET = @divExact(@bitOffsetOf(DeviceFrameHeader, "frame_type"), 8);
+pub const DEVICE_BUNDLE_HEADER_SIZE = @divExact(@bitSizeOf(DeviceBundleHeader), 8);
+pub const DEVICE_BUNDLE_ENTRY_SIZE = @divExact(@bitSizeOf(DeviceBundleEntry), 8);
+pub const MAX_DEVICES = 4;
 pub const FRAME_HEADER_SIZE = 3;
 pub const MAX_FRAME_PAYLOAD = 65535;
 pub const MAX_REPORT_DESCRIPTOR_SIZE = 4096;
@@ -45,20 +60,37 @@ pub const DeviceInfo = struct {
     name: []const u8 = &.{},
 };
 
+/// Initial bundle: count, then repeated u16le length + DeviceInfo. No trailing bytes.
+pub fn decodeDeviceBundle(payload: []const u8, out: *[MAX_DEVICES]DeviceInfo) ?[]DeviceInfo {
+    if (payload.len == 0 or payload[0] == 0 or payload[0] > MAX_DEVICES) return null;
+    var offset: usize = DEVICE_BUNDLE_HEADER_SIZE;
+    for (out[0..payload[0]]) |*info| {
+        if (payload.len - offset < DEVICE_BUNDLE_ENTRY_SIZE) return null;
+        const len = std.mem.readInt(@FieldType(DeviceBundleEntry, "info_length"), payload[offset..][0..DEVICE_BUNDLE_ENTRY_SIZE], .little);
+        offset += DEVICE_BUNDLE_ENTRY_SIZE;
+        if (len > payload.len - offset) return null;
+        info.* = decodeDeviceInfo(payload[offset..][0..len]) orelse return null;
+        if (info.bus > std.math.maxInt(u16)) return null;
+        offset += len;
+    }
+    if (offset != payload.len) return null;
+    return out[0..payload[0]];
+}
+
 pub const Frame = struct {
-    frame_type: u8,
+    frame_type: FrameType,
     payload: []const u8,
 };
 
 pub const FrameHeader = struct {
-    frame_type: u8,
+    frame_type: FrameType,
     payload_len: usize,
 };
 
-pub fn encodeFrameHeader(out: *[FRAME_HEADER_SIZE]u8, frame_type: u8, payload_len: usize) usize {
+pub fn encodeFrameHeader(out: *[FRAME_HEADER_SIZE]u8, frame_type: FrameType, payload_len: usize) usize {
     const safe_len: usize = @min(payload_len, MAX_FRAME_PAYLOAD);
     out.* = .{
-        frame_type,
+        @intFromEnum(frame_type),
         @intCast((safe_len >> 8) & 0xff),
         @intCast(safe_len & 0xff),
     };
@@ -68,7 +100,7 @@ pub fn encodeFrameHeader(out: *[FRAME_HEADER_SIZE]u8, frame_type: u8, payload_le
 pub fn decodeFrameHeader(header: []const u8) ?FrameHeader {
     if (header.len != FRAME_HEADER_SIZE) return null;
     return .{
-        .frame_type = header[0],
+        .frame_type = @enumFromInt(header[0]),
         .payload_len = (@as(usize, header[1]) << 8) | header[2],
     };
 }
@@ -120,7 +152,7 @@ pub fn decodeDeviceInfo(payload: []const u8) ?DeviceInfo {
 }
 
 /// Writes one frame and flushes so it hits the wire immediately.
-pub fn sendFrame(w: *Io.Writer, frame_type: u8, payload: []const u8) Io.Writer.Error!void {
+pub fn sendFrame(w: *Io.Writer, frame_type: FrameType, payload: []const u8) Io.Writer.Error!void {
     var header: [FRAME_HEADER_SIZE]u8 = undefined;
     const safe_len = encodeFrameHeader(&header, frame_type, payload.len);
     try w.writeAll(&header);
@@ -148,28 +180,46 @@ test "frame round trip" {
     var writer = Io.Writer.fixed(&wire);
 
     const payload = [_]u8{ 0x45, 1, 2, 3, 4, 5 };
-    try sendFrame(&writer, FRAME_INPUT, &payload);
-    try sendFrame(&writer, FRAME_SET_REPORT_REPLY, &.{});
+    try sendFrame(&writer, .input, &payload);
+    try sendFrame(&writer, .set_report_reply, &.{});
 
     var reader = Io.Reader.fixed(writer.buffered());
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
 
     const first = (try readFrame(&reader, &payload_buf)).?;
-    try std.testing.expectEqual(FRAME_INPUT, first.frame_type);
+    try std.testing.expectEqual(FrameType.input, first.frame_type);
     try std.testing.expectEqualSlices(u8, &payload, first.payload);
 
     const second = (try readFrame(&reader, &payload_buf)).?;
-    try std.testing.expectEqual(FRAME_SET_REPORT_REPLY, second.frame_type);
+    try std.testing.expectEqual(FrameType.set_report_reply, second.frame_type);
     try std.testing.expectEqual(@as(usize, 0), second.payload.len);
 
     try std.testing.expectEqual(@as(?Frame, null), try readFrame(&reader, &payload_buf));
 }
 
+test "unknown frame types round trip without losing their wire value" {
+    var storage: [64]u8 = undefined;
+    var writer = Io.Writer.fixed(&storage);
+    const unknown: FrameType = @enumFromInt(0xfe);
+    try sendFrame(&writer, unknown, &.{ 0xab, 0xcd });
+    try std.testing.expectEqualSlices(u8, &.{ 0xfe, 0, 2, 0xab, 0xcd }, writer.buffered());
+    var reader = Io.Reader.fixed(writer.buffered());
+    var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
+    const frame = (try readFrame(&reader, &payload_buf)).?;
+    try std.testing.expectEqual(unknown, frame.frame_type);
+    try std.testing.expectEqualSlices(u8, &.{ 0xab, 0xcd }, frame.payload);
+    const known = switch (frame.frame_type) {
+        .input, .output => true,
+        else => false,
+    };
+    try std.testing.expect(!known);
+}
+
 test "frame header round trip" {
     var header: [FRAME_HEADER_SIZE]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 65535), encodeFrameHeader(&header, FRAME_OUTPUT, 70000));
+    try std.testing.expectEqual(@as(usize, 65535), encodeFrameHeader(&header, .output, 70000));
     const decoded = decodeFrameHeader(&header).?;
-    try std.testing.expectEqual(FRAME_OUTPUT, decoded.frame_type);
+    try std.testing.expectEqual(FrameType.output, decoded.frame_type);
     try std.testing.expectEqual(@as(usize, 65535), decoded.payload_len);
     try std.testing.expectEqual(@as(?FrameHeader, null), decodeFrameHeader(&.{ 0x01, 0x00 }));
 }
@@ -234,10 +284,34 @@ test "device info rejects invalid name extensions" {
     try std.testing.expectEqual(@as(?DeviceInfo, null), decodeDeviceInfo(&invalid_utf8));
 }
 
+test "bundle bounds, truncation, bus and trailing bytes" {
+    var storage: [128]u8 = undefined;
+    storage[0] = 2;
+    var offset: usize = 1;
+    for (0..2) |_| {
+        const info = encodeDeviceInfo(.{ .bus = 3, .vendor = 0, .product = 0, .descriptor = &.{ 5, 1 }, .name = "test" }, storage[offset + 2 ..]).?;
+        std.mem.writeInt(u16, storage[offset..][0..2], @intCast(info.len), .little);
+        offset += 2 + info.len;
+    }
+    var infos: [MAX_DEVICES]DeviceInfo = undefined;
+    const decoded = decodeDeviceBundle(storage[0..offset], &infos).?;
+    try std.testing.expectEqual(@as(usize, 2), decoded.len);
+    try std.testing.expectEqualStrings("test", decoded[1].name);
+    for (0..offset) |length| try std.testing.expect(decodeDeviceBundle(storage[0..length], &infos) == null);
+    try std.testing.expect(decodeDeviceBundle(storage[0 .. offset + 1], &infos) == null);
+    storage[0] = 0;
+    try std.testing.expect(decodeDeviceBundle(storage[0..offset], &infos) == null);
+    storage[0] = MAX_DEVICES + 1;
+    try std.testing.expect(decodeDeviceBundle(storage[0..offset], &infos) == null);
+    storage[0] = 2;
+    storage[5] = 1; // bus no longer fits Linux UHID's u16 field
+    try std.testing.expect(decodeDeviceBundle(storage[0..offset], &infos) == null);
+}
+
 test "truncated frame reads as end of stream" {
     var wire: [64]u8 = undefined;
     var writer = Io.Writer.fixed(&wire);
-    try sendFrame(&writer, FRAME_OUTPUT, &.{ 1, 2, 3, 4 });
+    try sendFrame(&writer, .output, &.{ 1, 2, 3, 4 });
 
     var reader = Io.Reader.fixed(writer.buffered()[0..5]);
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;

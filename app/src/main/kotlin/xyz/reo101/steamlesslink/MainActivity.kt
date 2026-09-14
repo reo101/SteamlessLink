@@ -308,6 +308,7 @@ class MainActivity : Activity() {
             appendLine("Use the connection method dropdown and BLE/USB transport toggle, then tap Start.")
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
             appendLine("Tip: Steamless Link preserves the Valve HID device. Generic HID Gamepad creates a standard Linux gamepad on the Steamless Link host. Steamless Link Iroh uses an endpoint ticket instead of host:port.")
+            appendLine("Extended Generic HID adds rear buttons, two touchpads and IIO motion sensors. Steam does not automatically associate these companions with the gamepad; an updated host is required.")
             appendLine("Local Xbox mode bundles a virtual Android gamepad helper; it needs Shizuku or su/root and /dev/uinput.")
             appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
         }
@@ -445,11 +446,12 @@ class MainActivity : Activity() {
         private const val PREF_TRANSPORT_USB = "transport_usb"
         private const val DEFAULT_RAW_UHID_PORT = 3244
         private const val SHIZUKU_PERMISSION_REQUEST = 200
-        private val MODE_LABELS = arrayOf("Steamless Link", "Steamless Link Iroh", "Generic HID Gamepad", "Local Xbox (Shizuku/root)")
+        private val MODE_LABELS = arrayOf("Steamless Link", "Steamless Link Iroh", "Generic HID Gamepad", "Extended Generic HID", "Local Xbox (Shizuku/root)")
         private val MODE_VALUES = arrayOf(
             ControllerBridgeService.MODE_UHID_RAW,
             ControllerBridgeService.MODE_UHID_RAW_IROH,
             ControllerBridgeService.MODE_UHID_GENERIC_GAMEPAD,
+            ControllerBridgeService.MODE_UHID_EXTENDED_GAMEPAD,
             ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360,
         )
     }

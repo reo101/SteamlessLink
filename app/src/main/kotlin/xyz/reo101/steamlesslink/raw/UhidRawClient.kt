@@ -45,19 +45,21 @@ private fun writeFrameHeader(output: DataOutputStream, type: Int, payloadLength:
 class UhidRawClient(
     private val connection: RawUhidConnection,
     private val onStatus: (String) -> Unit,
-    private val onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
-    private val onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
-    private val onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
+    private val onGetReport: (device: Int, requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
+    private val onSetReport: (device: Int, requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
+    private val onOutputReport: (device: Int, reportType: Int, data: ByteArray) -> Boolean,
     private val initialDeviceInfo: ByteArray? = null,
+    private val initialDevices: List<ByteArray> = emptyList(),
 ) : Closeable {
     constructor(
         host: String,
         port: Int,
         onStatus: (String) -> Unit,
-        onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
-        onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
-        onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
+        onGetReport: (device: Int, requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
+        onSetReport: (device: Int, requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
+        onOutputReport: (device: Int, reportType: Int, data: ByteArray) -> Boolean,
         initialDeviceInfo: ByteArray? = null,
+        initialDevices: List<ByteArray> = emptyList(),
         connectTimeoutMs: Int = 10_000,
     ) : this(
         connection = RawUhidConnection.tcp(host, port, connectTimeoutMs),
@@ -66,6 +68,7 @@ class UhidRawClient(
         onSetReport = onSetReport,
         onOutputReport = onOutputReport,
         initialDeviceInfo = initialDeviceInfo,
+        initialDevices = initialDevices,
     )
 
     private val input = DataInputStream(connection.input)
@@ -73,10 +76,19 @@ class UhidRawClient(
     private val closed = AtomicBoolean(false)
     private val closedLatch = CountDownLatch(1)
     private val inputQueueLock = Object()
-    private val queuedInputReports = ArrayDeque<ByteArray>()
+    // Queue complete samples, not individual companion reports: congestion must
+    // never starve the gamepad or drop every touch-release behind sensor traffic.
+    private val queuedInputReports = ArrayDeque<List<Pair<Int, ByteArray>>>()
+    private val bundleReady = CountDownLatch(1)
+    @Volatile private var bundleAccepted = false
 
     init {
         try {
+            require(initialDevices.size <= RawProtocol.MAX_DEVICES)
+            require(initialDevices.isEmpty() || initialDeviceInfo == null)
+            if (initialDevices.isNotEmpty()) {
+                sendFrame(RawProtocol.FRAME_DEVICE_BUNDLE, RawProtocol.encodeDeviceBundle(initialDevices))
+            }
             initialDeviceInfo?.let { payload ->
                 require(payload.size <= RawProtocol.MAX_FRAME_PAYLOAD)
                 sendFrame(RawProtocol.FRAME_DEVICE_INFO, payload)
@@ -99,10 +111,32 @@ class UhidRawClient(
     private var droppedInputReports = 0L
     private var lastInputDropStatusAtMs = 0L
 
+    init {
+        if (initialDevices.isNotEmpty()) {
+            try {
+                if (!bundleReady.await(5, TimeUnit.SECONDS) || !bundleAccepted) {
+                    throw IOException("Host did not accept the device bundle; upgrade the host")
+                }
+            } catch (error: Exception) {
+                close()
+                throw error
+            }
+        }
+    }
+
     fun sendInputReport(report: ByteArray, length: Int = report.size): Boolean {
         if (closed.get()) return false
         val safeLength = length.coerceIn(0, report.size).coerceAtMost(RawProtocol.MAX_FRAME_PAYLOAD)
-        val payload = report.copyOf(safeLength)
+        return sendInputReports(listOf(0 to report.copyOf(safeLength)))
+    }
+
+    fun sendInputReports(reports: List<Pair<Int, ByteArray>>): Boolean {
+        require(reports.isNotEmpty())
+        val payload = reports.map { (device, report) ->
+            require(device in 0 until initialDevices.size.coerceAtLeast(1))
+            require(report.size <= RawProtocol.MAX_FRAME_PAYLOAD - if (initialDevices.isEmpty()) 0 else RawProtocol.DEVICE_FRAME_HEADER_SIZE)
+            device to report.copyOf()
+        }
         synchronized(inputQueueLock) {
             if (closed.get()) return false
             while (queuedInputReports.size >= MAX_INPUT_REPORT_QUEUE) {
@@ -130,7 +164,9 @@ class UhidRawClient(
                 queuedInputReports.removeFirst()
             }
 
-            runCatching { sendFrame(RawProtocol.FRAME_INPUT, payload) }
+            runCatching {
+                for ((device, report) in payload) sendDeviceFrame(device, RawProtocol.FRAME_INPUT, report)
+            }
                 .onFailure { error ->
                     if (!closed.get()) onStatus("Steamless Link writer stopped: ${error.message ?: error::class.java.simpleName}")
                     close()
@@ -151,14 +187,29 @@ class UhidRawClient(
     private fun readLoop() {
         runCatching {
             while (!closed.get()) {
-                val type = input.readUnsignedByte()
+                var type = input.readUnsignedByte()
                 val length = input.readUnsignedShort()
-                val payload = ByteArray(length)
+                var payload = ByteArray(length)
                 input.readFully(payload)
+                if (type == RawProtocol.FRAME_DEVICE_BUNDLE_READY) {
+                    check(initialDevices.isNotEmpty() && !bundleAccepted)
+                    check(payload.contentEquals(byteArrayOf(initialDevices.size.toByte())))
+                    bundleAccepted = true
+                    bundleReady.countDown()
+                    continue
+                }
+                var device = 0
+                if (initialDevices.isNotEmpty()) {
+                    check(bundleAccepted && type == RawProtocol.FRAME_DEVICE_FRAME && payload.size >= RawProtocol.DEVICE_FRAME_HEADER_SIZE)
+                    device = payload.u8(0)
+                    check(device in initialDevices.indices)
+                    type = payload.u8(RawProtocol.DEVICE_FRAME_TYPE_OFFSET)
+                    payload = payload.copyOfRange(RawProtocol.DEVICE_FRAME_HEADER_SIZE, payload.size)
+                }
                 when (type) {
-                    RawProtocol.FRAME_OUTPUT -> handleOutputReport(payload)
-                    RawProtocol.FRAME_GET_REPORT -> handleGetReport(payload)
-                    RawProtocol.FRAME_SET_REPORT -> handleSetReport(payload)
+                    RawProtocol.FRAME_OUTPUT -> handleOutputReport(device, payload)
+                    RawProtocol.FRAME_GET_REPORT -> handleGetReport(device, payload)
+                    RawProtocol.FRAME_SET_REPORT -> handleSetReport(device, payload)
                     else -> onStatus("Steamless Link frame type=0x%02x len=$length".format(type))
                 }
             }
@@ -168,46 +219,52 @@ class UhidRawClient(
         close()
     }
 
-    private fun handleOutputReport(payload: ByteArray) {
+    private fun handleOutputReport(device: Int, payload: ByteArray) {
         if (payload.isEmpty()) return
         val reportType = payload.u8(0)
         val data = payload.copyOfRange(1, payload.size)
         logControl("Steamless Link output report rtype=$reportType len=${data.size} head=${data.hex(8)}")
-        val ok = runCatching { onOutputReport(reportType, data) }.getOrDefault(false)
+        val ok = runCatching { onOutputReport(device, reportType, data) }.getOrDefault(false)
         if (!ok) logControl("Steamless Link output report write failed rtype=$reportType len=${data.size}")
     }
 
-    private fun handleGetReport(payload: ByteArray) {
+    private fun handleGetReport(device: Int, payload: ByteArray) {
         if (payload.size < 6) return
         val requestId = payload.i32Le(0)
         val reportNumber = payload.u8(4)
         val reportType = payload.u8(5)
         logControl("Steamless Link get-report id=$requestId rnum=0x%02x rtype=$reportType".format(reportNumber))
-        val report = runCatching { onGetReport(requestId, reportNumber, reportType) }.getOrNull()
+        val report = runCatching { onGetReport(device, requestId, reportNumber, reportType) }.getOrNull()
         val err = if (report == null) 5 else 0
         val data = report ?: ByteArray(0)
-        sendFrame(RawProtocol.FRAME_GET_REPORT_REPLY, ByteArray(6 + data.size).also { out ->
+        sendDeviceFrame(device, RawProtocol.FRAME_GET_REPORT_REPLY, ByteArray(6 + data.size).also { out ->
             out.putI32Le(0, requestId)
             out.putU16Le(4, err)
             data.copyInto(out, destinationOffset = 6)
         })
     }
 
-    private fun handleSetReport(payload: ByteArray) {
+    private fun handleSetReport(device: Int, payload: ByteArray) {
         if (payload.size < 6) return
         val requestId = payload.i32Le(0)
         val reportNumber = payload.u8(4)
         val reportType = payload.u8(5)
         val data = payload.copyOfRange(6, payload.size)
         logControl("Steamless Link set-report id=$requestId rnum=0x%02x rtype=$reportType len=${data.size} head=${data.hex(8)}".format(reportNumber))
-        val ok = runCatching { onSetReport(requestId, reportNumber, reportType, data) }.getOrDefault(false)
-        sendFrame(RawProtocol.FRAME_SET_REPORT_REPLY, ByteArray(6).also { out ->
+        val ok = runCatching { onSetReport(device, requestId, reportNumber, reportType, data) }.getOrDefault(false)
+        sendDeviceFrame(device, RawProtocol.FRAME_SET_REPORT_REPLY, ByteArray(6).also { out ->
             out.putI32Le(0, requestId)
             out.putU16Le(4, if (ok) 0 else 5)
         })
     }
 
+    private fun sendDeviceFrame(device: Int, type: Int, payload: ByteArray) {
+        if (initialDevices.isEmpty()) return sendFrame(type, payload)
+        sendFrame(RawProtocol.FRAME_DEVICE_FRAME, byteArrayOf(device.toByte(), type.toByte()) + payload)
+    }
+
     private fun sendFrame(type: Int, payload: ByteArray) {
+        require(payload.size <= RawProtocol.MAX_FRAME_PAYLOAD)
         synchronized(output) {
             val length = writeFrameHeader(output, type, payload.size)
             output.write(payload, 0, length)
@@ -225,6 +282,7 @@ class UhidRawClient(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         closedLatch.countDown()
+        bundleReady.countDown()
         synchronized(inputQueueLock) {
             queuedInputReports.clear()
             inputQueueLock.notifyAll()

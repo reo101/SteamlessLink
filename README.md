@@ -12,6 +12,7 @@ Alternative paths:
 
 ```text
 Steam Controller BLE/USB -> Android -> Zig generic-HID mapper -> TCP -> Steamless Link host -> generic UHID gamepad -> Steam
+Steam Controller BLE/USB -> Android -> Zig extended-HID mapper -> TCP -> gamepad + two touchpads + IIO motion sensors
 Steam Controller BLE/USB -> Android -> Zig Triton mapper -> local /dev/uinput Xbox gamepad
 ```
 
@@ -25,7 +26,7 @@ nix develop -c gradle :app:installDebug
 ```
 
 The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
-`x86_64`. Generic HID Gamepad and local Xbox mode report that they are unavailable
+`x86_64`. Both generic HID profiles and local Xbox mode report that they are unavailable
 when the native library cannot load; raw transport still works. Omit it only for a
 raw-transport-only build:
 
@@ -74,6 +75,21 @@ instead:
 STEAMLESS_ANDROID_TEST_MODE=uhid-generic-gamepad nix run .#android-emulator-link-test
 ```
 
+The extended profile test also checks the four-device handshake, indexed sensor
+feature requests/replies, and all five input reports:
+
+```sh
+STEAMLESS_ANDROID_TEST_MODE=uhid-extended-gamepad nix run .#android-emulator-link-test
+```
+
+The host kernel test exercises real Zig-generated descriptors and samples through
+UHID: rear buttons, both touchpads, sensor controls, direct and buffered IIO reads,
+and device removal on disconnect:
+
+```sh
+nix build .#checks.x86_64-linux.steamless-link-host-nixos
+```
+
 To test the same Android fake transport against the repo's NixOS host module
 and real Linux controller plumbing, run the optional VM integration app:
 
@@ -86,7 +102,7 @@ checks/CI.
 
 ## Android app configuration
 
-Remote Steamless Link and Generic HID Gamepad modes need a host/IP and port.
+Remote Steamless Link and both generic HID modes need a host/IP and port.
 Local uinput mode does not use a remote server.
 
 The UI defaults the remote controller modes to Steamless Link port `3244`.
@@ -96,9 +112,26 @@ The main UI has a BLE/USB transport toggle, a connection method dropdown, and St
 - `Steamless Link` — preferred controller path over TCP host/IP + port
 - `Steamless Link Iroh` — controller path over an Iroh endpoint ticket
 - `Generic HID Gamepad` — standard HID gamepad over direct raw TCP; no haptics yet
+- `Extended Generic HID` - gamepad with rear buttons, two independent absolute touchpads, and standards-based gyro/accelerometer sensors over TCP
 - `Local Xbox (Shizuku/root)` — local Android virtual Xbox 360 gamepad via `/dev/uinput`
 
 USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
+
+### Extended Generic HID
+
+This is a separate standards-first profile, not Sony/Xbox emulation. It requires
+an updated host that acknowledges the four-device bundle. The existing small
+Generic HID Gamepad and legacy raw protocol remain available unchanged.
+
+Linux exposes the gamepad and each touchpad through evdev. Motion binds to
+`hid-sensor-hub` and the `hid-sensor-accel-3d` / `hid-sensor-gyro-3d` IIO drivers.
+A consumer reads motion through IIO, not the gamepad's evdev node. **Steam does
+not automatically associate these independent devices or use these IIO sensors
+as controller gyro.** This profile does not add haptics or an SDL driver.
+
+BLE/USB capture enables Triton's raw accel/gyro reports in this mode. Sensor
+streaming is independently controlled by the host for each sensor; it defaults
+to off. See [the host protocol and report layout](server/README.md#extended-generic-hid-profile).
 
 ### Steamless Link over Iroh
 

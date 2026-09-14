@@ -14,6 +14,7 @@ import android.util.Log
 import xyz.reo101.steamlesslink.R
 import xyz.reo101.steamlesslink.ble.BleTritonTransport
 import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
+import xyz.reo101.steamlesslink.protocol.ExtendedGamepadSession
 import xyz.reo101.steamlesslink.protocol.GenericGamepadProtocol
 import xyz.reo101.steamlesslink.protocol.NativeProtocol
 import xyz.reo101.steamlesslink.protocol.RawProtocol
@@ -33,6 +34,7 @@ class ControllerBridgeService : Service() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "controller-bridge") }
     private val rawClientRef = AtomicReference<UhidRawClient?>(null)
     private val rawModeRef = AtomicReference<String?>(null)
+    private val extendedSessionRef = AtomicReference<ExtendedGamepadSession?>(null)
     private val localUinputRef = AtomicReference<LocalUinputXbox360Output?>(null)
     private val bridgeGeneration = AtomicLong(0)
     private var tritonTransport: Closeable? = null
@@ -62,6 +64,7 @@ class ControllerBridgeService : Service() {
             MODE_UHID_RAW -> "Steamless Link"
             MODE_UHID_RAW_IROH -> "Steamless Link Iroh"
             MODE_UHID_GENERIC_GAMEPAD -> "Generic HID Gamepad"
+            MODE_UHID_EXTENDED_GAMEPAD -> "Extended Generic HID"
             MODE_LOCAL_UINPUT_XBOX360 -> "Local Xbox (Shizuku/root)"
             else -> mode
         }
@@ -78,7 +81,7 @@ class ControllerBridgeService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        if ((mode == MODE_UHID_GENERIC_GAMEPAD || mode == MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable) {
+        if ((mode == MODE_UHID_GENERIC_GAMEPAD || mode == MODE_UHID_EXTENDED_GAMEPAD || mode == MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable) {
             status("$modeLabel is unavailable: bundled Zig protocol library failed to load")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
@@ -106,7 +109,7 @@ class ControllerBridgeService : Service() {
                 if (mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH) bindProcessToWifiIfAvailable()
                 if (!isCurrentBridge(generation)) return@runCatching
                 if (!awaitCaptureReady(generation)) return@runCatching
-                if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH || mode == MODE_UHID_GENERIC_GAMEPAD) {
+                if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH || mode == MODE_UHID_GENERIC_GAMEPAD || mode == MODE_UHID_EXTENDED_GAMEPAD) {
                     runRawBridge(host, port, mode, irohTicket, generation)
                     return@runCatching
                 }
@@ -135,6 +138,7 @@ class ControllerBridgeService : Service() {
     private fun runRawBridge(host: String, port: Int, mode: String, irohTicket: String, generation: Long) {
         while (isCurrentBridge(generation)) {
             var raw: UhidRawClient? = null
+            val extended = if (mode == MODE_UHID_EXTENDED_GAMEPAD) ExtendedGamepadSession() else null
             try {
                 val initialDeviceInfo = if (mode == MODE_UHID_GENERIC_GAMEPAD) genericGamepadDeviceInfo() else null
                 raw = if (mode == MODE_UHID_RAW_IROH) {
@@ -142,9 +146,9 @@ class ControllerBridgeService : Service() {
                     UhidRawClient(
                         connection = irohRawUhidConnection(this, irohTicket, onStatus = ::status),
                         onStatus = ::status,
-                        onGetReport = ::handleRawGetReport,
-                        onSetReport = ::handleRawSetReport,
-                        onOutputReport = ::handleRawOutputReport,
+                        onGetReport = { _, request, number, type -> handleRawGetReport(request, number, type) },
+                        onSetReport = { _, request, number, type, data -> handleRawSetReport(request, number, type, data) },
+                        onOutputReport = { _, type, data -> handleRawOutputReport(type, data) },
                         initialDeviceInfo = initialDeviceInfo,
                     )
                 } else {
@@ -153,18 +157,28 @@ class ControllerBridgeService : Service() {
                         host = host,
                         port = port,
                         onStatus = ::status,
-                        onGetReport = ::handleRawGetReport,
-                        onSetReport = ::handleRawSetReport,
-                        onOutputReport = ::handleRawOutputReport,
+                        onGetReport = { device, request, number, type ->
+                            if (extended != null) extended.getReport(device, number, type)
+                            else handleRawGetReport(request, number, type)
+                        },
+                        onSetReport = { device, request, number, type, data ->
+                            if (extended != null) extended.setReport(device, number, type, data)
+                            else handleRawSetReport(request, number, type, data)
+                        },
+                        onOutputReport = { _, type, data -> extended == null && handleRawOutputReport(type, data) },
                         initialDeviceInfo = initialDeviceInfo,
+                        initialDevices = extended?.deviceInfos.orEmpty(),
                     )
                 }
                 if (!isCurrentBridge(generation)) return
                 rawModeRef.set(mode)
+                extendedSessionRef.set(extended)
                 rawClientRef.set(raw)
                 synchronized(closeables) { closeables.add(raw) }
                 status(
-                    if (mode == MODE_UHID_GENERIC_GAMEPAD) {
+                    if (extended != null) {
+                        "Connected to Steamless Link host; forwarding gamepad, touchpads and HID sensors"
+                    } else if (mode == MODE_UHID_GENERIC_GAMEPAD) {
                         "Connected to Steamless Link host; forwarding generic HID gamepad reports"
                     } else {
                         "Connected to Steamless Link host; forwarding Triton reports"
@@ -180,6 +194,7 @@ class ControllerBridgeService : Service() {
                 raw?.let { client ->
                     rawClientRef.compareAndSet(client, null)
                     rawModeRef.compareAndSet(mode, null)
+                    extendedSessionRef.compareAndSet(extended, null)
                     client.close()
                     synchronized(closeables) { closeables.remove(client) }
                 }
@@ -200,6 +215,7 @@ class ControllerBridgeService : Service() {
         val closeable = when (transport) {
             TRANSPORT_USB -> UsbTritonTransport(
                 context = this,
+                enableImu = mode == MODE_UHID_EXTENDED_GAMEPAD,
                 onReport = ::handleTritonReport,
                 onStatus = ::status,
             ).also { it.start() }
@@ -208,6 +224,7 @@ class ControllerBridgeService : Service() {
                 onReport = ::handleTritonReport,
                 onStatus = ::status,
                 enableLizardModeRefresh = mode != MODE_UHID_RAW && mode != MODE_UHID_RAW_IROH,
+                enableImu = mode == MODE_UHID_EXTENDED_GAMEPAD,
             ).also { it.start() }
             TRANSPORT_FAKE -> {
                 check(isDebuggable()) { "Fake Triton transport is only available in debuggable builds" }
@@ -282,12 +299,18 @@ class ControllerBridgeService : Service() {
         val rawClient = rawClientRef.get()
         if (rawClient != null) {
             runCatching {
-                val outputReport = if (rawModeRef.get() == MODE_UHID_GENERIC_GAMEPAD) {
-                    mapTritonToGenericGamepad(report, length)
+                val extended = extendedSessionRef.get()
+                val sent = if (extended != null) {
+                    rawClient.sendInputReports(extended.map(report, length))
                 } else {
-                    triton.rawReport
+                    val outputReport = if (rawModeRef.get() == MODE_UHID_GENERIC_GAMEPAD) {
+                        mapTritonToGenericGamepad(report, length)
+                    } else {
+                        triton.rawReport
+                    }
+                    rawClient.sendInputReport(outputReport, outputReport.size)
                 }
-                if (!rawClient.sendInputReport(outputReport, outputReport.size)) {
+                if (!sent) {
                     rawClientRef.compareAndSet(rawClient, null)
                     rawClient.close()
                     status("Steamless Link stream is closed")
@@ -402,6 +425,7 @@ class ControllerBridgeService : Service() {
         bridgeGeneration.incrementAndGet()
         rawClientRef.getAndSet(null)
         rawModeRef.set(null)
+        extendedSessionRef.set(null)
         localUinputRef.getAndSet(null)
         clearProcessNetworkBinding()
         synchronized(closeables) {
@@ -476,6 +500,7 @@ class ControllerBridgeService : Service() {
         const val MODE_UHID_RAW = "uhid-raw"
         const val MODE_UHID_RAW_IROH = "uhid-raw-iroh"
         const val MODE_UHID_GENERIC_GAMEPAD = "uhid-generic-gamepad"
+        const val MODE_UHID_EXTENDED_GAMEPAD = "uhid-extended-gamepad"
         const val MODE_LOCAL_UINPUT_XBOX360 = "local-uinput-xbox360"
         private const val DEFAULT_HOST = ""
         private const val DEFAULT_PORT = 3244

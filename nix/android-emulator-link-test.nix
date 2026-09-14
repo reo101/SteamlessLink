@@ -42,7 +42,7 @@ writeShellApplication {
     iroh_mode="''${STEAMLESS_ANDROID_TEST_IROH:-0}"
     test_mode="''${STEAMLESS_ANDROID_TEST_MODE:-uhid-raw}"
     case "$test_mode" in
-      uhid-raw|uhid-generic-gamepad) ;;
+      uhid-raw|uhid-generic-gamepad|uhid-extended-gamepad) ;;
       *) echo "error: unsupported STEAMLESS_ANDROID_TEST_MODE=$test_mode" >&2; exit 1 ;;
     esac
     adb_serial="''${STEAMLESS_ANDROID_TEST_SERIAL:-emulator-5554}"
@@ -143,6 +143,12 @@ writeShellApplication {
     ticket_file = pathlib.Path(sys.argv[4])
     mode = sys.argv[5]
     generic = mode == 'uhid-generic-gamepad'
+    extended = mode == 'uhid-extended-gamepad'
+    companions = set()
+    controls = set()
+    saw_bundle = False
+    def incomplete():
+        return reports < 10 or (extended and (len(companions) < 5 or controls != {101, 102, 201, 202}))
     deadline = time.monotonic() + 45
     reports = 0
     saw_report = False
@@ -157,7 +163,7 @@ writeShellApplication {
         server.bind(('127.0.0.1', port))
         server.listen(2)
         server.settimeout(1)
-        while time.monotonic() < deadline and reports < 10:
+        while time.monotonic() < deadline and incomplete():
             try:
                 conn, addr = server.accept()
             except socket.timeout:
@@ -165,7 +171,7 @@ writeShellApplication {
             with conn:
                 conn.settimeout(1)
                 log.write_text(log.read_text() + f'client={addr}\n')
-                while time.monotonic() < deadline and reports < 10:
+                while time.monotonic() < deadline and incomplete():
                     try:
                         header = conn.recv(3)
                     except socket.timeout:
@@ -192,6 +198,47 @@ writeShellApplication {
                         assert ticket, 'missing Iroh ticket'
                         write_frame(conn, 0x85, ticket)
                         break
+                    if frame_type == 0x07:
+                        assert extended and not saw_bundle
+                        assert payload[0] == 4
+                        offset = 1
+                        names = [b'SteamlessLink Extended Gamepad', b'SteamlessLink Left Touchpad', b'SteamlessLink Right Touchpad', b'SteamlessLink Motion Sensors']
+                        for name in names:
+                            length = struct.unpack_from('<H', payload, offset)[0]
+                            offset += 2
+                            info = payload[offset:offset + length]
+                            bus, vendor, product, descriptor_size = struct.unpack_from('<IHHH', info)
+                            assert (bus, vendor, product) == (3, 0, 0)
+                            assert info[10 + descriptor_size:] == bytes([len(name)]) + name
+                            offset += length
+                        assert offset == len(payload)
+                        saw_bundle = True
+                        write_frame(conn, 0x87, bytes([4]))
+                        for number in (1, 2):
+                            write_frame(conn, 6, bytes([3, 0x82]) + struct.pack('<IBB', 100 + number, number, 0))
+                        for number in (1, 2):
+                            write_frame(conn, 6, bytes([3, 0x83]) + struct.pack('<IBB', 200 + number, number, 0) + bytes([number, 2, 1, 4, 0, 0, 0]))
+                        continue
+                    if frame_type == 6:
+                        assert extended and saw_bundle and len(payload) >= 2
+                        device, frame_type = payload[:2]
+                        payload = payload[2:]
+                        size = len(payload)
+                        if frame_type in (2, 3):
+                            request, error = struct.unpack_from('<IH', payload)
+                            assert device == 3 and error == 0
+                            if frame_type == 2:
+                                assert request in (101, 102)
+                                assert payload[6:] == bytes([request - 100, 1, 5, 4, 0, 0, 0])
+                            else:
+                                assert request in (201, 202) and len(payload) == 6
+                            controls.add(request)
+                            continue
+                        assert frame_type == 1
+                        assert 0 <= device < 4
+                        assert len(payload) == [12, 8, 8, 13][device]
+                        assert payload[0] in ((1, 2) if device == 3 else (1,))
+                        companions.add((device, payload[0]))
                     if frame_type == 0x04:
                         assert generic, 'unexpected device info frame'
                         assert size >= 11, size
@@ -205,7 +252,9 @@ writeShellApplication {
                         continue
                     if frame_type == 0x01:
                         reports += 1
-                        if generic:
+                        if extended:
+                            assert saw_bundle
+                        elif generic:
                             assert saw_device_info, 'generic input preceded device info'
                             assert size == 10, size
                             assert payload[0] == 0x01, payload.hex()
@@ -217,6 +266,7 @@ writeShellApplication {
                                 saw_report = True
         assert reports >= 10, reports
         assert not generic or saw_device_info
+        assert not extended or (len(companions) == 5 and controls == {101, 102, 201, 202})
     result.write_text(f'ok mode={mode} reports={reports}\n')
     PY
     python3 "$workdir/raw-server.py" "$host_port" "$workdir/server-result" "$workdir/server.log" "$workdir/iroh-ticket" "$test_mode" &
@@ -228,7 +278,11 @@ writeShellApplication {
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" install -r "$test_apk" >/dev/null
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell am instrument -w \
       -e class xyz.reo101.steamlesslink.protocol.NativeProtocolInstrumentationTest \
-      "$package_name.test/androidx.test.runner.AndroidJUnitRunner" >/dev/null
+      "$package_name.test/androidx.test.runner.AndroidJUnitRunner" >"$workdir/instrumentation.log"
+    if ! grep -Eq '^OK \([0-9]+ tests?\)' "$workdir/instrumentation.log"; then
+      cat "$workdir/instrumentation.log" >&2
+      exit 1
+    fi
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1 || true
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_SCAN >/dev/null 2>&1 || true

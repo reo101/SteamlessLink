@@ -1,3 +1,15 @@
+const std = @import("std");
+
+// This JNI library does not link libc. Zig's default stderr writer pulls in
+// Android libc symbols via its I/O runtime; keep safety panics self-contained.
+pub const panic = std.debug.FullPanic(struct {
+    fn call(message: []const u8, _: ?usize) noreturn {
+        _ = std.os.linux.write(std.posix.STDERR_FILENO, message.ptr, message.len);
+        @trap();
+    }
+}.call);
+
+const extended_gamepad = @import("steamless-core").extended_gamepad;
 const generic_gamepad = @import("steamless-core").generic_gamepad;
 const triton = @import("steamless-core").triton;
 
@@ -104,6 +116,30 @@ fn mapTritonToGenericGamepad(
         generic_gamepad.INPUT_REPORT_SIZE,
         @ptrCast(&packet),
     );
+}
+
+export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToExtendedGamepad(
+    env: *JNIEnv,
+    thiz: jobject,
+    report_array: jbyteArray,
+    requested_length: jint,
+    out_packet_array: jbyteArray,
+) jboolean {
+    _ = thiz;
+    mapTritonToExtendedGamepad(env, report_array, requested_length, out_packet_array) catch |err| {
+        throwZigError(env, err);
+        return JNI_FALSE;
+    };
+    return JNI_TRUE;
+}
+
+fn mapTritonToExtendedGamepad(env: *JNIEnv, report_array: jbyteArray, requested_length: jint, out_packet_array: jbyteArray) !void {
+    if (env.*.GetArrayLength(env, out_packet_array) < extended_gamepad.PACKET_SIZE) return error.OutputBufferTooSmall;
+    var report: [MAX_TRITON_REPORT_BYTES]u8 = undefined;
+    const bytes = try readTritonReport(env, report_array, requested_length, &report);
+    var packet: [extended_gamepad.PACKET_SIZE]u8 = undefined;
+    try extended_gamepad.mapTritonToInput(bytes, &packet);
+    env.*.SetByteArrayRegion(env, out_packet_array, 0, extended_gamepad.PACKET_SIZE, @ptrCast(&packet));
 }
 
 fn readTritonReport(

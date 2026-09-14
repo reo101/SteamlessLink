@@ -157,7 +157,7 @@ fn runOnce(io: Io, config: *const Config) !void {
         .product = device_info.product,
         .descriptor = descriptor[0..device_info.descriptor_len],
     }, &device_info_payload) orelse return error.InvalidDeviceInfo;
-    try protocol.sendFrame(&stream_writer.interface, protocol.FRAME_DEVICE_INFO, encoded_device_info);
+    try protocol.sendFrame(&stream_writer.interface, .device_info, encoded_device_info);
     config.log(.info, "sent device info bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}", .{
         device_info.bus,
         device_info.vendor,
@@ -250,7 +250,7 @@ const Bridge = struct {
                     core.log.hexHead(report_buf[0..n], &head_buf),
                 });
             }
-            try bridge.sendFrame(protocol.FRAME_INPUT, report_buf[0..n]);
+            try bridge.sendFrame(.input, report_buf[0..n]);
         }
     }
 
@@ -263,7 +263,7 @@ const Bridge = struct {
         while (true) {
             const frame = try protocol.readFrame(reader, &payload_buf) orelse return;
             switch (frame.frame_type) {
-                protocol.FRAME_OUTPUT => {
+                .output => {
                     if (frame.payload.len < 2) continue;
                     const report_type = frame.payload[0];
                     const data = frame.payload[1..];
@@ -272,7 +272,7 @@ const Bridge = struct {
                         config.log(.warning, "output write failed: {s}", .{@errorName(err)});
                     };
                 },
-                protocol.FRAME_GET_REPORT => {
+                .get_report => {
                     if (frame.payload.len < 6) continue;
                     const request_id = bytes.readU32Le(frame.payload, 0);
                     const report_number = frame.payload[4];
@@ -289,16 +289,16 @@ const Bridge = struct {
                             config.log(.debug, "get_report id={d} rnum=0x{x:0>2} len={d}", .{ request_id, report_number, len });
                             bytes.writeU16Le(&reply, 4, 0);
                             @memcpy(reply[6 .. 6 + len], report_buf[0..len]);
-                            try bridge.sendFrame(protocol.FRAME_GET_REPORT_REPLY, reply[0 .. 6 + len]);
+                            try bridge.sendFrame(.get_report_reply, reply[0 .. 6 + len]);
                         },
                         .err => |errno| {
                             config.log(.warning, "get_report id={d} rnum=0x{x:0>2} errno={d}", .{ request_id, report_number, errno });
                             bytes.writeU16Le(&reply, 4, errno);
-                            try bridge.sendFrame(protocol.FRAME_GET_REPORT_REPLY, reply[0..6]);
+                            try bridge.sendFrame(.get_report_reply, reply[0..6]);
                         },
                     }
                 },
-                protocol.FRAME_SET_REPORT => {
+                .set_report => {
                     if (frame.payload.len < 6) continue;
                     const request_id = bytes.readU32Le(frame.payload, 0);
                     const report_number = frame.payload[4];
@@ -318,14 +318,14 @@ const Bridge = struct {
                     var reply: [6]u8 = undefined;
                     bytes.writeU32Le(&reply, 0, request_id);
                     bytes.writeU16Le(&reply, 4, errno);
-                    try bridge.sendFrame(protocol.FRAME_SET_REPORT_REPLY, &reply);
+                    try bridge.sendFrame(.set_report_reply, &reply);
                 },
-                else => config.log(.debug, "ignoring frame type=0x{x:0>2} len={d}", .{ frame.frame_type, frame.payload.len }),
+                else => config.log(.debug, "ignoring frame type=0x{x:0>2} len={d}", .{ @intFromEnum(frame.frame_type), frame.payload.len }),
             }
         }
     }
 
-    fn sendFrame(bridge: *Bridge, frame_type: u8, payload: []const u8) !void {
+    fn sendFrame(bridge: *Bridge, frame_type: protocol.FrameType, payload: []const u8) !void {
         try bridge.writer_mutex.lock(bridge.io);
         defer bridge.writer_mutex.unlock(bridge.io);
         try protocol.sendFrame(bridge.writer, frame_type, payload);
