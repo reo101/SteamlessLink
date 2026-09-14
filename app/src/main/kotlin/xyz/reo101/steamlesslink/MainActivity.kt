@@ -374,7 +374,10 @@ class MainActivity : Activity() {
 
     private fun updateInputAvailability() {
         val mode = selectedMode()
-        val usesHostPort = mode == ControllerBridgeService.MODE_UHID_RAW || mode == ControllerBridgeService.MODE_UHID_RAW_IROH || mode == ControllerBridgeService.MODE_VIIPER_XBOX360
+        val isIroh = mode == ControllerBridgeService.MODE_UHID_RAW_IROH
+        val usesHostPort = mode == ControllerBridgeService.MODE_UHID_RAW || isIroh || mode == ControllerBridgeService.MODE_VIIPER_XBOX360
+        hostInput.hint = if (isIroh) "Bootstrap host or IP" else "Bridge host or IP"
+        portInput.hint = if (isIroh) "Bootstrap raw TCP port" else "Bridge port (Steamless Link: $DEFAULT_RAW_UHID_PORT, VIIPER: $DEFAULT_VIIPER_PORT)"
         setInputAvailability(hostInput, usesHostPort, "Bridge host/IP is used by Steamless Link, Iroh bootstrap, and VIIPER Xbox")
         setInputAvailability(portInput, usesHostPort, "Bridge port is used by Steamless Link, Iroh bootstrap, and VIIPER Xbox")
         setInputAvailability(irohTicketInput, mode == ControllerBridgeService.MODE_UHID_RAW_IROH, "Iroh ticket is used by Steamless Link Iroh")
