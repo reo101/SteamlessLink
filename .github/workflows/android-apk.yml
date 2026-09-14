@@ -32,8 +32,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Test and assemble debug APK
-        run: nix develop --accept-flake-config -c gradle --no-daemon -Psteamless.buildZig=true :app:testDebugUnitTest :app:testZigProtocol :app:assembleDebug
+      - name: Test and assemble Android APKs
+        run: nix develop --accept-flake-config -c gradle --no-daemon :app:testDebugUnitTest :app:testZigProtocol :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

@@ -6,10 +6,10 @@ pub const Error = error{
     OutputBufferTooSmall,
 };
 
-const REPORT_ID_USB_STATE = 0x42;
-const REPORT_ID_BLE_STATE = 0x45;
-const REPORT_ID_BLE_TIMESTAMP_STATE = 0x47;
-const MIN_BASIC_REPORT_BYTES = 18;
+pub const REPORT_ID_USB_STATE = 0x42;
+pub const REPORT_ID_BLE_STATE = 0x45;
+pub const REPORT_ID_BLE_TIMESTAMP_STATE = 0x47;
+pub const MIN_BASIC_REPORT_BYTES = 18;
 pub const VIIPER_PACKET_SIZE = 20;
 
 const SteamButtons = struct {

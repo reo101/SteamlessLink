@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.content.pm.PackageManager
 import rikka.shizuku.Shizuku
-import xyz.reo101.steamlesslink.viiper.Xbox360State
+import xyz.reo101.steamlesslink.protocol.TritonProtocol
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
@@ -17,13 +17,9 @@ class LocalUinputXbox360Output private constructor(
     private val closed = AtomicBoolean(false)
     private val output = process.outputStream.buffered()
 
-    fun send(state: Xbox360State) {
-        sendPacket(state.toViiperPacket())
-    }
-
     @Synchronized
     fun sendPacket(packet: ByteArray) {
-        check(packet.size == Xbox360State.PACKET_SIZE) { "expected ${Xbox360State.PACKET_SIZE}-byte Xbox packet" }
+        check(packet.size == TritonProtocol.VIIPER_PACKET_SIZE) { "expected ${TritonProtocol.VIIPER_PACKET_SIZE}-byte Xbox packet" }
         if (closed.get()) return
         output.write(packet)
         output.flush()
@@ -47,7 +43,7 @@ class LocalUinputXbox360Output private constructor(
 
         private fun extractHelper(context: Context): File {
             val abi = Build.SUPPORTED_ABIS.firstOrNull { abi -> hasHelperAsset(context, abi) }
-                ?: error("uinput helper asset not found; rebuild the APK with -Psteamless.buildUinputHelper=true")
+                ?: error("this APK was built without local uinput support")
             val helper = File(context.filesDir, "helpers/$abi/$HELPER_NAME")
             helper.parentFile?.mkdirs()
             context.assets.open("uinput/$abi/$HELPER_NAME").use { input ->

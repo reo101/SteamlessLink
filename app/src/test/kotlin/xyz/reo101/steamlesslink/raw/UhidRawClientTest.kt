@@ -1,5 +1,6 @@
 package xyz.reo101.steamlesslink.raw
 
+import xyz.reo101.steamlesslink.protocol.RawProtocol
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -21,7 +22,7 @@ class UhidRawClientTest {
                 listener.accept().use { socket ->
                     DataInputStream(socket.getInputStream()).readFully(request)
                     DataOutputStream(socket.getOutputStream()).apply {
-                        writeByte(0x85)
+                        writeByte(RawProtocol.FRAME_IROH_TICKET)
                         writeShort(ticket.length)
                         writeBytes(ticket)
                         flush()
@@ -32,7 +33,7 @@ class UhidRawClientTest {
 
         assertEquals(ticket, fetchIrohTicket("127.0.0.1", server.localPort))
         worker.join()
-        assertEquals(0x05, request[0].toInt() and 0xff)
+        assertEquals(RawProtocol.FRAME_GET_IROH_TICKET, request[0].toInt() and 0xff)
         assertEquals(0, request[1].toInt())
         assertEquals(0, request[2].toInt())
     }

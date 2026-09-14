@@ -1,5 +1,6 @@
 package xyz.reo101.steamlesslink.raw
 
+import xyz.reo101.steamlesslink.protocol.RawProtocol
 import xyz.reo101.steamlesslink.util.hex
 import xyz.reo101.steamlesslink.util.i32Le
 import xyz.reo101.steamlesslink.util.putI32Le
@@ -17,25 +18,28 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-private const val FRAME_GET_IROH_TICKET = 0x05
-private const val FRAME_IROH_TICKET = 0x85
-
 fun fetchIrohTicket(host: String, port: Int, connectTimeoutMs: Int = 10_000): String = Socket().use { socket ->
     socket.tcpNoDelay = true
     socket.soTimeout = connectTimeoutMs
     socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
     val output = DataOutputStream(socket.getOutputStream())
-    output.writeByte(FRAME_GET_IROH_TICKET)
-    output.writeShort(0)
+    writeFrameHeader(output, RawProtocol.FRAME_GET_IROH_TICKET, 0)
     output.flush()
 
     val input = DataInputStream(socket.getInputStream())
     val type = input.readUnsignedByte()
     val length = input.readUnsignedShort()
-    if (type != FRAME_IROH_TICKET || length == 0) throw IOException("Iroh ticket is unavailable")
+    if (type != RawProtocol.FRAME_IROH_TICKET || length == 0) throw IOException("Iroh ticket is unavailable")
     ByteArray(length).also(input::readFully).toString(Charsets.UTF_8).trim().also { ticket ->
         if (ticket.isEmpty()) throw IOException("Iroh ticket is unavailable")
     }
+}
+
+private fun writeFrameHeader(output: DataOutputStream, type: Int, payloadLength: Int): Int {
+    val header = RawProtocol.encodeFrameHeader(type, payloadLength)
+    output.writeByte(header ushr 16)
+    output.writeShort(header and RawProtocol.MAX_FRAME_PAYLOAD)
+    return header and RawProtocol.MAX_FRAME_PAYLOAD
 }
 
 class UhidRawClient(
@@ -81,7 +85,7 @@ class UhidRawClient(
 
     fun sendInputReport(report: ByteArray, length: Int = report.size): Boolean {
         if (closed.get()) return false
-        val safeLength = length.coerceIn(0, report.size).coerceAtMost(65535)
+        val safeLength = length.coerceIn(0, report.size).coerceAtMost(RawProtocol.MAX_FRAME_PAYLOAD)
         val payload = report.copyOf(safeLength)
         synchronized(inputQueueLock) {
             if (closed.get()) return false
@@ -110,7 +114,7 @@ class UhidRawClient(
                 queuedInputReports.removeFirst()
             }
 
-            runCatching { sendFrame(FRAME_INPUT, payload) }
+            runCatching { sendFrame(RawProtocol.FRAME_INPUT, payload) }
                 .onFailure { error ->
                     if (!closed.get()) onStatus("Steamless Link writer stopped: ${error.message ?: error::class.java.simpleName}")
                     close()
@@ -136,9 +140,9 @@ class UhidRawClient(
                 val payload = ByteArray(length)
                 input.readFully(payload)
                 when (type) {
-                    FRAME_OUTPUT -> handleOutputReport(payload)
-                    FRAME_GET_REPORT -> handleGetReport(payload)
-                    FRAME_SET_REPORT -> handleSetReport(payload)
+                    RawProtocol.FRAME_OUTPUT -> handleOutputReport(payload)
+                    RawProtocol.FRAME_GET_REPORT -> handleGetReport(payload)
+                    RawProtocol.FRAME_SET_REPORT -> handleSetReport(payload)
                     else -> onStatus("Steamless Link frame type=0x%02x len=$length".format(type))
                 }
             }
@@ -166,7 +170,7 @@ class UhidRawClient(
         val report = runCatching { onGetReport(requestId, reportNumber, reportType) }.getOrNull()
         val err = if (report == null) 5 else 0
         val data = report ?: ByteArray(0)
-        sendFrame(FRAME_GET_REPORT_REPLY, ByteArray(6 + data.size).also { out ->
+        sendFrame(RawProtocol.FRAME_GET_REPORT_REPLY, ByteArray(6 + data.size).also { out ->
             out.putI32Le(0, requestId)
             out.putU16Le(4, err)
             data.copyInto(out, destinationOffset = 6)
@@ -181,7 +185,7 @@ class UhidRawClient(
         val data = payload.copyOfRange(6, payload.size)
         logControl("Steamless Link set-report id=$requestId rnum=0x%02x rtype=$reportType len=${data.size} head=${data.hex(8)}".format(reportNumber))
         val ok = runCatching { onSetReport(requestId, reportNumber, reportType, data) }.getOrDefault(false)
-        sendFrame(FRAME_SET_REPORT_REPLY, ByteArray(6).also { out ->
+        sendFrame(RawProtocol.FRAME_SET_REPORT_REPLY, ByteArray(6).also { out ->
             out.putI32Le(0, requestId)
             out.putU16Le(4, if (ok) 0 else 5)
         })
@@ -189,9 +193,8 @@ class UhidRawClient(
 
     private fun sendFrame(type: Int, payload: ByteArray) {
         synchronized(output) {
-            output.writeByte(type)
-            output.writeShort(payload.size.coerceAtMost(65535))
-            output.write(payload, 0, payload.size.coerceAtMost(65535))
+            val length = writeFrameHeader(output, type, payload.size)
+            output.write(payload, 0, length)
             output.flush()
         }
     }
@@ -215,12 +218,6 @@ class UhidRawClient(
     }
 
     companion object {
-        private const val FRAME_INPUT = 0x01
-        private const val FRAME_GET_REPORT_REPLY = 0x02
-        private const val FRAME_SET_REPORT_REPLY = 0x03
-        private const val FRAME_OUTPUT = 0x81
-        private const val FRAME_GET_REPORT = 0x82
-        private const val FRAME_SET_REPORT = 0x83
         private const val MAX_INPUT_REPORT_QUEUE = 8
         private const val INPUT_DROP_STATUS_INTERVAL_MS = 1000L
     }

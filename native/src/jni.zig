@@ -1,4 +1,4 @@
-const protocol = @import("protocol.zig");
+const protocol = @import("steamless-core").triton;
 
 const jint = i32;
 const jsize = i32;

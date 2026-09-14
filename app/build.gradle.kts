@@ -10,12 +10,21 @@ val irohJniLibsDir = providers.gradleProperty("steamless.irohJniLibs")
     .orElse(providers.environmentVariable("IROH_JNI").map { "$it/jniLibs" })
 val packageZigNative = providers.gradleProperty("steamless.buildZig")
     .map { it.toBoolean() }
-    .orElse(false)
+    .orElse(true)
 val packageUinputHelper = providers.gradleProperty("steamless.buildUinputHelper")
     .map { it.toBoolean() }
-    .orElse(false)
+    .orElse(true)
 val zigSources = fileTree(rootProject.file("native/src")) {
     include("**/*.zig")
+}
+val zigCoreSources = fileTree(rootProject.file("core/src")) {
+    include("**/*.zig")
+}
+val zigCoreRoot = rootProject.file("core/src/root.zig")
+val protocolGenerator = rootProject.file("core/src/generate_kotlin_protocol.zig")
+val generatedProtocolDir = layout.buildDirectory.dir("generated/source/protocol/main")
+val generatedProtocolFile = generatedProtocolDir.map {
+    it.file("xyz/reo101/steamlesslink/protocol/ProtocolConstants.kt")
 }
 val zigAndroidTargets = listOf(
     "arm64-v8a" to "aarch64-linux-android",
@@ -59,6 +68,7 @@ android {
         jvmTarget = "17"
     }
 
+    sourceSets["main"].java.srcDir(generatedProtocolDir)
     if (packageZigNative.get()) {
         sourceSets["main"].jniLibs.srcDir(zigJniLibsDir)
     }
@@ -69,7 +79,25 @@ android {
 
     packaging {
         jniLibs.keepDebugSymbols += listOf("**/libsteamless_protocol.so", "**/libiroh_ffi.so")
+        resources.excludes += listOf("darwin-aarch64/**", "win32-x86-64/**")
     }
+}
+
+val generateProtocolConstants = tasks.register<Exec>("generateProtocolConstants") {
+    inputs.files(zigCoreSources, protocolGenerator)
+    outputs.file(generatedProtocolFile)
+
+    doFirst {
+        generatedProtocolFile.get().asFile.parentFile.mkdirs()
+    }
+
+    commandLine(
+        "zig",
+        "run",
+        protocolGenerator.absolutePath,
+        "--",
+        generatedProtocolFile.get().asFile.absolutePath,
+    )
 }
 
 val zigNativeTasks = zigAndroidTargets.map { (abi, target) ->
@@ -79,7 +107,7 @@ val zigNativeTasks = zigAndroidTargets.map { (abi, target) ->
     val outputFile = zigJniLibsDir.map { it.file("$abi/libsteamless_protocol.so") }
 
     tasks.register<Exec>(taskName) {
-        inputs.files(zigSources)
+        inputs.files(zigSources, zigCoreSources)
         inputs.property("zigTarget", target)
         inputs.property("zigOptimize", "ReleaseSafe")
         inputs.property("zigStrip", true)
@@ -99,7 +127,10 @@ val zigNativeTasks = zigAndroidTargets.map { (abi, target) ->
             "ReleaseSafe",
             "-fstrip",
             "-femit-bin=${outputFile.get().asFile.absolutePath}",
-            rootProject.file("native/src/jni.zig").absolutePath,
+            "--dep",
+            "steamless-core",
+            "-Mroot=${rootProject.file("native/src/jni.zig").absolutePath}",
+            "-Msteamless-core=${zigCoreRoot.absolutePath}",
         )
     }
 }
@@ -144,8 +175,12 @@ val buildUinputHelper = tasks.register("buildUinputHelper") {
 }
 
 tasks.register<Exec>("testZigProtocol") {
-    inputs.files(zigSources)
-    commandLine("zig", "test", rootProject.file("native/src/protocol.zig").absolutePath)
+    inputs.files(zigCoreSources)
+    commandLine("zig", "test", zigCoreRoot.absolutePath)
+}
+
+tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }.configureEach {
+    dependsOn(generateProtocolConstants)
 }
 
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
@@ -169,4 +204,6 @@ dependencies {
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("junit:junit:4.13.2")
 }

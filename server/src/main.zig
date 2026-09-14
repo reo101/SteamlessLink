@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c");
+const protocol = @import("steamless-core").protocol;
 
 const Allocator = std.mem.Allocator;
 const AtomicBool = std.atomic.Value(bool);
@@ -26,24 +27,19 @@ const BUS_USB: u16 = 0x03;
 const VALVE_VID: u32 = 0x28de;
 const TRITON_BLE_PID: u32 = 0x1303;
 
-const FRAME_INPUT: u8 = 0x01;
-const FRAME_GET_REPORT_REPLY: u8 = 0x02;
-const FRAME_SET_REPORT_REPLY: u8 = 0x03;
-const FRAME_DEVICE_INFO: u8 = 0x04;
-const FRAME_GET_IROH_TICKET: u8 = 0x05;
-const FRAME_OUTPUT: u8 = 0x81;
-const FRAME_GET_REPORT: u8 = 0x82;
-const FRAME_SET_REPORT: u8 = 0x83;
-const FRAME_IROH_TICKET: u8 = 0x85;
-const MAX_FRAME_PAYLOAD = 65535;
-const DEVICE_INFO_HEADER_SIZE = 10;
+const FRAME_INPUT = protocol.FRAME_INPUT;
+const FRAME_GET_REPORT_REPLY = protocol.FRAME_GET_REPORT_REPLY;
+const FRAME_SET_REPORT_REPLY = protocol.FRAME_SET_REPORT_REPLY;
+const FRAME_DEVICE_INFO = protocol.FRAME_DEVICE_INFO;
+const FRAME_GET_IROH_TICKET = protocol.FRAME_GET_IROH_TICKET;
+const FRAME_OUTPUT = protocol.FRAME_OUTPUT;
+const FRAME_GET_REPORT = protocol.FRAME_GET_REPORT;
+const FRAME_SET_REPORT = protocol.FRAME_SET_REPORT;
+const FRAME_IROH_TICKET = protocol.FRAME_IROH_TICKET;
+const MAX_FRAME_PAYLOAD = protocol.MAX_FRAME_PAYLOAD;
+const DEVICE_INFO_HEADER_SIZE = protocol.DEVICE_INFO_HEADER_SIZE;
 
-const DeviceInfo = struct {
-    bus: u32,
-    vendor: u16,
-    product: u16,
-    descriptor: []const u8,
-};
+const DeviceInfo = protocol.DeviceInfo;
 
 const REPORT_DESCRIPTOR_SIZE = 7 + 19 * 15 + 1;
 
@@ -91,10 +87,7 @@ const Config = struct {
     log_level: LogLevel = .info,
 };
 
-const Frame = struct {
-    frame_type: u8,
-    payload: []const u8,
-};
+const Frame = protocol.Frame;
 
 var active_client_fd = AtomicFd.init(-1);
 
@@ -580,22 +573,18 @@ const UhidDevice = struct {
 };
 
 fn sendFrame(fd: c_int, frame_type: u8, payload: []const u8) !void {
-    const safe_len = @min(payload.len, MAX_FRAME_PAYLOAD);
-    var header = [_]u8{
-        frame_type,
-        @intCast((safe_len >> 8) & 0xff),
-        @intCast(safe_len & 0xff),
-    };
+    var header: [protocol.FRAME_HEADER_SIZE]u8 = undefined;
+    const safe_len = protocol.encodeFrameHeader(&header, frame_type, payload.len);
     try writeAllFd(fd, &header);
     try writeAllFd(fd, payload[0..safe_len]);
 }
 
 fn readFrame(fd: c_int, payload_buf: *[MAX_FRAME_PAYLOAD]u8) !?Frame {
-    var header: [3]u8 = undefined;
+    var header: [protocol.FRAME_HEADER_SIZE]u8 = undefined;
     if (!try recvExact(fd, &header)) return null;
-    const size = (@as(usize, header[1]) << 8) | header[2];
-    if (!try recvExact(fd, payload_buf[0..size])) return null;
-    return .{ .frame_type = header[0], .payload = payload_buf[0..size] };
+    const decoded = protocol.decodeFrameHeader(&header) orelse unreachable;
+    if (!try recvExact(fd, payload_buf[0..decoded.payload_len])) return null;
+    return .{ .frame_type = decoded.frame_type, .payload = payload_buf[0..decoded.payload_len] };
 }
 
 fn readIrohTicket(io: std.Io, path: []const u8, buffer: *[MAX_FRAME_PAYLOAD]u8) ![]const u8 {
@@ -702,16 +691,7 @@ fn copyZBytes(dest: []u8, value: []const u8) void {
 }
 
 fn decodeDeviceInfo(payload: []const u8) ?DeviceInfo {
-    if (payload.len < DEVICE_INFO_HEADER_SIZE) return null;
-    const descriptor_len = readU16Le(payload, 8);
-    const size = DEVICE_INFO_HEADER_SIZE + @as(usize, descriptor_len);
-    if (descriptor_len == 0 or descriptor_len > UHID_DATA_MAX or payload.len != size) return null;
-    return .{
-        .bus = readU32Le(payload, 0),
-        .vendor = readU16Le(payload, 4),
-        .product = readU16Le(payload, 6),
-        .descriptor = payload[DEVICE_INFO_HEADER_SIZE..],
-    };
+    return protocol.decodeDeviceInfo(payload);
 }
 
 fn readU16Le(bytes: []const u8, offset: usize) u16 {

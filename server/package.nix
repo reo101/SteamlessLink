@@ -4,11 +4,18 @@
   zig,
 }:
 
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "steamless-link-host";
   version = "0.1.0";
 
-  src = ./.;
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../core
+      ../server
+    ];
+  };
+  sourceRoot = "${finalAttrs.src.name}/server";
   nativeBuildInputs = [ zig ];
   hardeningDisable = [ "fortify" ];
 
@@ -61,4 +68,4 @@ stdenv.mkDerivation {
     mainProgram = "steamless-link-host";
     platforms = lib.platforms.linux;
   };
-}
+})

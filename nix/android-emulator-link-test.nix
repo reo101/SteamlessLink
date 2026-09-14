@@ -68,7 +68,7 @@ writeShellApplication {
     fi
 
     cd "$project_root"
-    gradle --no-daemon :app:assembleDebug
+    gradle --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
 
     mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_EMULATOR_HOME"
     printf 'no\n' | "$avdmanager" create avd \
@@ -198,7 +198,12 @@ writeShellApplication {
     server_pid=$!
 
     apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"
+    test_apk="$project_root/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" install -r "$apk" >/dev/null
+    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" install -r "$test_apk" >/dev/null
+    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell am instrument -w \
+      -e class xyz.reo101.steamlesslink.protocol.NativeProtocolInstrumentationTest \
+      "$package_name.test/androidx.test.runner.AndroidJUnitRunner" >/dev/null
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1 || true
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_SCAN >/dev/null 2>&1 || true

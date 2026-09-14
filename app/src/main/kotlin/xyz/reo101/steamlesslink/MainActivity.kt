@@ -324,7 +324,7 @@ class MainActivity : Activity() {
             appendLine("Use the connection method dropdown and BLE/USB transport toggle, then tap Start.")
             appendLine("BLE path uses bonded devices named SteamController or Steam Ctrl*. Pair in Android Bluetooth settings first.")
             appendLine("Tip: Steamless Link should point at a Steamless Link host and appears to Steam as a Valve HID device. Steamless Link Iroh uses an endpoint ticket instead of host:port. Xbox fallback points at a VIIPER server.")
-            appendLine("Local Xbox mode creates a virtual Android gamepad through Shizuku shell or su/root; build the APK with -Psteamless.buildUinputHelper=true.")
+            appendLine("Local Xbox mode bundles a virtual Android gamepad helper; it needs Shizuku or su/root and /dev/uinput.")
             appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
         }
     }
@@ -464,7 +464,7 @@ class MainActivity : Activity() {
         private const val DEFAULT_RAW_UHID_PORT = 3244
         private const val DEFAULT_VIIPER_PORT = 3242
         private const val SHIZUKU_PERMISSION_REQUEST = 200
-        private val MODE_LABELS = arrayOf("Steamless Link", "Steamless Link Iroh", "VIIPER Xbox", "Local Xbox")
+        private val MODE_LABELS = arrayOf("Steamless Link", "Steamless Link Iroh", "VIIPER Xbox", "Local Xbox (Shizuku/root)")
         private val MODE_VALUES = arrayOf(
             ControllerBridgeService.MODE_UHID_RAW,
             ControllerBridgeService.MODE_UHID_RAW_IROH,

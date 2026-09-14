@@ -4,6 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const core_dep = b.dependency("steamless_core", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const c = b.addTranslateC(.{
         .root_source_file = b.path("src/c.h"),
         .target = target,
@@ -18,7 +22,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "c", .module = c_module }},
+        .imports = &.{
+            .{ .name = "c", .module = c_module },
+            .{ .name = "steamless-core", .module = core_dep.module("steamless-core") },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -32,7 +39,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "c", .module = c_module }},
+        .imports = &.{
+            .{ .name = "c", .module = c_module },
+            .{ .name = "steamless-core", .module = core_dep.module("steamless-core") },
+        },
     });
     const tests = b.addTest(.{ .root_module = test_module });
     const run_tests = b.addRunArtifact(tests);

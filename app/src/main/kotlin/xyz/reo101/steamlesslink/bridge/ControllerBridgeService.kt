@@ -15,14 +15,13 @@ import xyz.reo101.steamlesslink.R
 import xyz.reo101.steamlesslink.ble.BleTritonTransport
 import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
 import xyz.reo101.steamlesslink.protocol.NativeProtocol
+import xyz.reo101.steamlesslink.protocol.TritonProtocol
 import xyz.reo101.steamlesslink.raw.UhidRawClient
 import xyz.reo101.steamlesslink.raw.irohRawUhidConnection
 import xyz.reo101.steamlesslink.triton.FakeTritonTransport
-import xyz.reo101.steamlesslink.triton.TritonRawState
 import xyz.reo101.steamlesslink.triton.TritonReportParser
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
 import xyz.reo101.steamlesslink.viiper.ViiperDeviceStream
-import xyz.reo101.steamlesslink.viiper.Xbox360State
 import xyz.reo101.steamlesslink.viiper.viiperClient
 import java.io.Closeable
 import java.util.concurrent.ExecutorService
@@ -55,8 +54,18 @@ class ControllerBridgeService : Service() {
         val key = intent?.getStringExtra(EXTRA_KEY)
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
         val irohTicket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
-        val target = if (mode == MODE_UHID_RAW_IROH) "Iroh ticket" else "$host:$port"
-        val modeLabel = if (mode == MODE_UHID_RAW_IROH) "Steamless Link Iroh" else if (mode == MODE_UHID_RAW) "Steamless Link" else mode
+        val target = when (mode) {
+            MODE_UHID_RAW_IROH -> "Iroh ticket"
+            MODE_LOCAL_UINPUT_XBOX360 -> "this device"
+            else -> "$host:$port"
+        }
+        val modeLabel = when (mode) {
+            MODE_UHID_RAW -> "Steamless Link"
+            MODE_UHID_RAW_IROH -> "Steamless Link Iroh"
+            MODE_VIIPER_XBOX360 -> "VIIPER Xbox"
+            MODE_LOCAL_UINPUT_XBOX360 -> "Local Xbox (Shizuku/root)"
+            else -> mode
+        }
         startForeground(NOTIFICATION_ID, notification("Starting $transport/$modeLabel bridge to $target"))
         if (mode == MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
             status("Iroh endpoint ticket is required")
@@ -66,6 +75,12 @@ class ControllerBridgeService : Service() {
         }
         if (host.isBlank() && mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH) {
             status("Bridge host/IP is required")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if ((mode == MODE_VIIPER_XBOX360 || mode == MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable) {
+            status("$modeLabel is unavailable: bundled Zig protocol library failed to load")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
             return START_NOT_STICKY
@@ -302,9 +317,12 @@ class ControllerBridgeService : Service() {
 
         val localUinput = localUinputRef.get()
         if (localUinput != null) {
-            runCatching { sendLocalUinputReport(localUinput, report, length, triton) }
+            runCatching { sendLocalUinputReport(localUinput, report, length) }
                 .onFailure { error ->
-                    localUinputRef.compareAndSet(localUinput, null)
+                    if (localUinputRef.compareAndSet(localUinput, null)) {
+                        localUinput.close()
+                        synchronized(closeables) { closeables.remove(localUinput) }
+                    }
                     status("Local uinput stream write failed: ${error.message ?: error::class.java.simpleName}")
                     Log.e(TAG, "Local uinput stream write failed", error)
                 }
@@ -319,42 +337,31 @@ class ControllerBridgeService : Service() {
             }
             return
         }
-        runCatching { sendViiperReport(stream, report, length, triton) }
+        runCatching { sendViiperReport(stream, report, length) }
             .onFailure { error ->
-                streamRef.compareAndSet(stream, null)
+                if (streamRef.compareAndSet(stream, null)) {
+                    runCatching { stream.close() }
+                    synchronized(closeables) { closeables.remove(stream) }
+                }
                 status("VIIPER stream write failed: ${error.message ?: error::class.java.simpleName}")
                 Log.e(TAG, "VIIPER stream write failed", error)
             }
     }
 
-    private fun sendViiperReport(
-        stream: ViiperDeviceStream,
-        report: ByteArray,
-        length: Int,
-        triton: TritonRawState,
-    ) {
-        val nativePacket = ByteArray(Xbox360State.PACKET_SIZE)
-        if (NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
-            stream.sendPacket(nativePacket)
-            return
+    private fun sendViiperReport(stream: ViiperDeviceStream, report: ByteArray, length: Int) {
+        val nativePacket = ByteArray(TritonProtocol.VIIPER_PACKET_SIZE)
+        check(NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
+            "Zig protocol mapper is unavailable on this device"
         }
-
-        stream.send(TritonToXbox360Mapper.map(triton))
+        stream.sendPacket(nativePacket)
     }
 
-    private fun sendLocalUinputReport(
-        output: LocalUinputXbox360Output,
-        report: ByteArray,
-        length: Int,
-        triton: TritonRawState,
-    ) {
-        val nativePacket = ByteArray(Xbox360State.PACKET_SIZE)
-        if (NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
-            output.sendPacket(nativePacket)
-            return
+    private fun sendLocalUinputReport(output: LocalUinputXbox360Output, report: ByteArray, length: Int) {
+        val nativePacket = ByteArray(TritonProtocol.VIIPER_PACKET_SIZE)
+        check(NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
+            "Zig protocol mapper is unavailable on this device"
         }
-
-        output.send(TritonToXbox360Mapper.map(triton))
+        output.sendPacket(nativePacket)
     }
 
     private fun awaitCaptureReady(generation: Long): Boolean {

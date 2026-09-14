@@ -11,8 +11,8 @@ Steam Controller BLE -> Android GATT -> raw Triton reports -> TCP -> Steamless L
 Fallback paths:
 
 ```text
-Steam Controller BLE/USB -> Android -> Triton parser -> VIIPER xbox360 stream
-Steam Controller BLE/USB -> Android -> Triton parser -> local /dev/uinput Xbox gamepad
+Steam Controller BLE/USB -> Android -> Zig Triton mapper -> VIIPER Xbox 360 stream
+Steam Controller BLE/USB -> Android -> Zig Triton mapper -> local /dev/uinput Xbox gamepad
 ```
 
 The Steamless Link path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. The VIIPER path is a known-good remote Xbox 360 fallback. The local uinput path is for Android games/apps on the phone and requires Shizuku shell access or root.
@@ -24,18 +24,22 @@ nix develop -c gradle :app:testDebugUnitTest
 nix develop -c gradle :app:installDebug
 ```
 
-The Zig/JNI protocol mapper is experimental and opt-in. The Kotlin mapper is
-used by default; build an APK with the native mapper only when testing it:
+The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
+`x86_64`. VIIPER and local Xbox mode report that they are unavailable when the
+native library cannot load; raw transport still works. Omit it only for a
+raw-transport-only build:
 
 ```sh
-nix develop -c gradle -Psteamless.buildZig=true :app:testZigProtocol :app:assembleDebug
+nix develop -c gradle -Psteamless.buildZig=false :app:assembleDebug
 ```
 
-Local Android uinput mode needs a small privileged helper packaged as an APK
-asset. Build that helper into the debug APK with:
+Local Android uinput mode bundles its small privileged helper by default. It
+only works through Shizuku or root on devices that expose `/dev/uinput`; other
+devices report that the local mode is unavailable. Omit the helper only when
+needed:
 
 ```sh
-nix develop -c gradle -Psteamless.buildUinputHelper=true :app:assembleDebug
+nix develop -c gradle -Psteamless.buildUinputHelper=false :app:assembleDebug
 ```
 
 The helper is a standalone Zig/Linux executable built for Android targets
@@ -59,9 +63,9 @@ host-side emulator smoke test with:
 nix run .#android-emulator-link-test
 ```
 
-That command builds the debug APK, boots a headless Android emulator, starts the
-app in fake controller mode through `MainActivity`, and verifies that the app
-connects to a host TCP server and sends raw `0x45` input frames.
+That command builds the app and test APKs, boots a headless Android emulator,
+verifies the bundled Zig mapper through instrumentation, then starts the app in
+fake controller mode through `MainActivity` and checks raw `0x45` input frames.
 
 To test the same Android fake transport against the repo's NixOS host module
 and real Linux controller plumbing, run the optional VM integration app:
@@ -88,7 +92,7 @@ The main UI has a BLE/USB transport toggle, a connection method dropdown, and St
 - `Steamless Link` — preferred controller path over TCP host/IP + port
 - `Steamless Link Iroh` — controller path over an Iroh endpoint ticket
 - `VIIPER Xbox` — VIIPER Xbox 360 fallback
-- `Local Xbox` — local Android virtual Xbox 360 gamepad via Shizuku/root `/dev/uinput`
+- `Local Xbox (Shizuku/root)` — local Android virtual Xbox 360 gamepad via `/dev/uinput`
 
 USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
 

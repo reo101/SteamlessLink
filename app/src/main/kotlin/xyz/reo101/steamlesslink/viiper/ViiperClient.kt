@@ -12,10 +12,6 @@ interface ViiperClient {
 data class ViiperDeviceRef(val busId: Int, val devId: String)
 
 interface ViiperDeviceStream : Closeable {
-    fun send(state: Xbox360State) {
-        sendPacket(state.toViiperPacket())
-    }
-
     fun sendPacket(packet: ByteArray)
 }
 

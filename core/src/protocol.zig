@@ -1,5 +1,7 @@
 //! SteamlessLink raw UHID wire protocol.
 //!
+//! `generate_kotlin_protocol.zig` emits Android constants from this module.
+//!
 //! Every frame is `u8 frame_type`, `u16be payload_length`, payload bytes.
 //!
 //! Controller side -> UHID server:
@@ -28,6 +30,7 @@ pub const FRAME_OUTPUT: u8 = 0x81;
 pub const FRAME_GET_REPORT: u8 = 0x82;
 pub const FRAME_SET_REPORT: u8 = 0x83;
 pub const FRAME_IROH_TICKET: u8 = 0x85;
+pub const FRAME_HEADER_SIZE = 3;
 pub const MAX_FRAME_PAYLOAD = 65535;
 pub const MAX_REPORT_DESCRIPTOR_SIZE = 4096;
 pub const DEVICE_INFO_HEADER_SIZE = 10;
@@ -43,6 +46,29 @@ pub const Frame = struct {
     frame_type: u8,
     payload: []const u8,
 };
+
+pub const FrameHeader = struct {
+    frame_type: u8,
+    payload_len: usize,
+};
+
+pub fn encodeFrameHeader(out: *[FRAME_HEADER_SIZE]u8, frame_type: u8, payload_len: usize) usize {
+    const safe_len: usize = @min(payload_len, MAX_FRAME_PAYLOAD);
+    out.* = .{
+        frame_type,
+        @intCast((safe_len >> 8) & 0xff),
+        @intCast(safe_len & 0xff),
+    };
+    return safe_len;
+}
+
+pub fn decodeFrameHeader(header: []const u8) ?FrameHeader {
+    if (header.len != FRAME_HEADER_SIZE) return null;
+    return .{
+        .frame_type = header[0],
+        .payload_len = (@as(usize, header[1]) << 8) | header[2],
+    };
+}
 
 pub fn encodeDeviceInfo(info: DeviceInfo, out: []u8) ?[]const u8 {
     if (info.descriptor.len == 0 or info.descriptor.len > MAX_REPORT_DESCRIPTOR_SIZE) return null;
@@ -71,29 +97,26 @@ pub fn decodeDeviceInfo(payload: []const u8) ?DeviceInfo {
 
 /// Writes one frame and flushes so it hits the wire immediately.
 pub fn sendFrame(w: *Io.Writer, frame_type: u8, payload: []const u8) Io.Writer.Error!void {
-    const safe_len = @min(payload.len, MAX_FRAME_PAYLOAD);
-    try w.writeAll(&.{
-        frame_type,
-        @intCast((safe_len >> 8) & 0xff),
-        @intCast(safe_len & 0xff),
-    });
+    var header: [FRAME_HEADER_SIZE]u8 = undefined;
+    const safe_len = encodeFrameHeader(&header, frame_type, payload.len);
+    try w.writeAll(&header);
     try w.writeAll(payload[0..safe_len]);
     try w.flush();
 }
 
 /// Returns null when the stream ends (cleanly or mid-frame).
 pub fn readFrame(r: *Io.Reader, payload_buf: *[MAX_FRAME_PAYLOAD]u8) error{ReadFailed}!?Frame {
-    var header: [3]u8 = undefined;
+    var header: [FRAME_HEADER_SIZE]u8 = undefined;
     r.readSliceAll(&header) catch |err| switch (err) {
         error.EndOfStream => return null,
         error.ReadFailed => return error.ReadFailed,
     };
-    const size = (@as(usize, header[1]) << 8) | header[2];
-    r.readSliceAll(payload_buf[0..size]) catch |err| switch (err) {
+    const decoded = decodeFrameHeader(&header) orelse unreachable;
+    r.readSliceAll(payload_buf[0..decoded.payload_len]) catch |err| switch (err) {
         error.EndOfStream => return null,
         error.ReadFailed => return error.ReadFailed,
     };
-    return .{ .frame_type = header[0], .payload = payload_buf[0..size] };
+    return .{ .frame_type = decoded.frame_type, .payload = payload_buf[0..decoded.payload_len] };
 }
 
 test "frame round trip" {
@@ -116,6 +139,15 @@ test "frame round trip" {
     try std.testing.expectEqual(@as(usize, 0), second.payload.len);
 
     try std.testing.expectEqual(@as(?Frame, null), try readFrame(&reader, &payload_buf));
+}
+
+test "frame header round trip" {
+    var header: [FRAME_HEADER_SIZE]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 65535), encodeFrameHeader(&header, FRAME_OUTPUT, 70000));
+    const decoded = decodeFrameHeader(&header).?;
+    try std.testing.expectEqual(FRAME_OUTPUT, decoded.frame_type);
+    try std.testing.expectEqual(@as(usize, 65535), decoded.payload_len);
+    try std.testing.expectEqual(@as(?FrameHeader, null), decodeFrameHeader(&.{ 0x01, 0x00 }));
 }
 
 test "device info round trip" {
