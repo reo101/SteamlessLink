@@ -10,24 +10,24 @@ pub const REPORT_ID_USB_STATE = 0x42;
 pub const REPORT_ID_BLE_STATE = 0x45;
 pub const REPORT_ID_BLE_TIMESTAMP_STATE = 0x47;
 pub const MIN_BASIC_REPORT_BYTES = 18;
-pub const VIIPER_PACKET_SIZE = 20;
+pub const XBOX360_PACKET_SIZE = 20;
 
-const SteamButtons = struct {
-    const A: u32 = 0x0000_0001;
-    const B: u32 = 0x0000_0002;
-    const X: u32 = 0x0000_0004;
-    const Y: u32 = 0x0000_0008;
-    const R3: u32 = 0x0000_0020;
-    const VIEW: u32 = 0x0000_0040;
-    const R: u32 = 0x0000_0200;
-    const DPAD_DOWN: u32 = 0x0000_0400;
-    const DPAD_RIGHT: u32 = 0x0000_0800;
-    const DPAD_LEFT: u32 = 0x0000_1000;
-    const DPAD_UP: u32 = 0x0000_2000;
-    const MENU: u32 = 0x0000_4000;
-    const L3: u32 = 0x0000_8000;
-    const STEAM: u32 = 0x0001_0000;
-    const L: u32 = 0x0008_0000;
+pub const Buttons = struct {
+    pub const A: u32 = 0x0000_0001;
+    pub const B: u32 = 0x0000_0002;
+    pub const X: u32 = 0x0000_0004;
+    pub const Y: u32 = 0x0000_0008;
+    pub const R3: u32 = 0x0000_0020;
+    pub const VIEW: u32 = 0x0000_0040;
+    pub const R: u32 = 0x0000_0200;
+    pub const DPAD_DOWN: u32 = 0x0000_0400;
+    pub const DPAD_RIGHT: u32 = 0x0000_0800;
+    pub const DPAD_LEFT: u32 = 0x0000_1000;
+    pub const DPAD_UP: u32 = 0x0000_2000;
+    pub const MENU: u32 = 0x0000_4000;
+    pub const L3: u32 = 0x0000_8000;
+    pub const STEAM: u32 = 0x0001_0000;
+    pub const L: u32 = 0x0008_0000;
 };
 
 const XboxButtons = struct {
@@ -48,7 +48,7 @@ const XboxButtons = struct {
     const Y: u32 = 0x8000;
 };
 
-const TritonState = struct {
+pub const State = struct {
     buttons: u32,
     left_trigger: i16,
     right_trigger: i16,
@@ -58,10 +58,10 @@ const TritonState = struct {
     right_stick_y: i16,
 };
 
-pub fn mapTritonToViiper(report: []const u8, out_packet: []u8) Error!void {
-    if (out_packet.len < VIIPER_PACKET_SIZE) return error.OutputBufferTooSmall;
+pub fn mapTritonToXbox360(report: []const u8, out_packet: []u8) Error!void {
+    if (out_packet.len < XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
 
-    const state = try parseTriton(report);
+    const state = try parse(report);
     const buttons = mapButtons(state.buttons);
 
     putU32Le(out_packet, 0, buttons);
@@ -71,10 +71,10 @@ pub fn mapTritonToViiper(report: []const u8, out_packet: []u8) Error!void {
     putI16Le(out_packet, 8, state.left_stick_y);
     putI16Le(out_packet, 10, state.right_stick_x);
     putI16Le(out_packet, 12, state.right_stick_y);
-    @memset(out_packet[14..VIIPER_PACKET_SIZE], 0);
+    @memset(out_packet[14..XBOX360_PACKET_SIZE], 0);
 }
 
-fn parseTriton(report: []const u8) Error!TritonState {
+pub fn parse(report: []const u8) Error!State {
     if (report.len < MIN_BASIC_REPORT_BYTES) return error.ReportTooShort;
 
     const report_id = report[0];
@@ -95,21 +95,21 @@ fn parseTriton(report: []const u8) Error!TritonState {
 
 fn mapButtons(buttons: u32) u32 {
     var out: u32 = 0;
-    if (has(buttons, SteamButtons.A)) out |= XboxButtons.A;
-    if (has(buttons, SteamButtons.B)) out |= XboxButtons.B;
-    if (has(buttons, SteamButtons.X)) out |= XboxButtons.X;
-    if (has(buttons, SteamButtons.Y)) out |= XboxButtons.Y;
-    if (has(buttons, SteamButtons.L)) out |= XboxButtons.LEFT_BUMPER;
-    if (has(buttons, SteamButtons.R)) out |= XboxButtons.RIGHT_BUMPER;
-    if (has(buttons, SteamButtons.L3)) out |= XboxButtons.LEFT_STICK;
-    if (has(buttons, SteamButtons.R3)) out |= XboxButtons.RIGHT_STICK;
-    if (has(buttons, SteamButtons.MENU)) out |= XboxButtons.START;
-    if (has(buttons, SteamButtons.VIEW)) out |= XboxButtons.BACK;
-    if (has(buttons, SteamButtons.STEAM)) out |= XboxButtons.GUIDE;
-    if (has(buttons, SteamButtons.DPAD_UP)) out |= XboxButtons.DPAD_UP;
-    if (has(buttons, SteamButtons.DPAD_DOWN)) out |= XboxButtons.DPAD_DOWN;
-    if (has(buttons, SteamButtons.DPAD_LEFT)) out |= XboxButtons.DPAD_LEFT;
-    if (has(buttons, SteamButtons.DPAD_RIGHT)) out |= XboxButtons.DPAD_RIGHT;
+    if (has(buttons, Buttons.A)) out |= XboxButtons.A;
+    if (has(buttons, Buttons.B)) out |= XboxButtons.B;
+    if (has(buttons, Buttons.X)) out |= XboxButtons.X;
+    if (has(buttons, Buttons.Y)) out |= XboxButtons.Y;
+    if (has(buttons, Buttons.L)) out |= XboxButtons.LEFT_BUMPER;
+    if (has(buttons, Buttons.R)) out |= XboxButtons.RIGHT_BUMPER;
+    if (has(buttons, Buttons.L3)) out |= XboxButtons.LEFT_STICK;
+    if (has(buttons, Buttons.R3)) out |= XboxButtons.RIGHT_STICK;
+    if (has(buttons, Buttons.MENU)) out |= XboxButtons.START;
+    if (has(buttons, Buttons.VIEW)) out |= XboxButtons.BACK;
+    if (has(buttons, Buttons.STEAM)) out |= XboxButtons.GUIDE;
+    if (has(buttons, Buttons.DPAD_UP)) out |= XboxButtons.DPAD_UP;
+    if (has(buttons, Buttons.DPAD_DOWN)) out |= XboxButtons.DPAD_DOWN;
+    if (has(buttons, Buttons.DPAD_LEFT)) out |= XboxButtons.DPAD_LEFT;
+    if (has(buttons, Buttons.DPAD_RIGHT)) out |= XboxButtons.DPAD_RIGHT;
     return out;
 }
 
@@ -147,11 +147,11 @@ fn putI16Le(bytes: []u8, offset: usize, value: i16) void {
     bytes[offset + 1] = @truncate(bits >> 8);
 }
 
-test "maps current and legacy BLE reports to VIIPER packets" {
+test "maps current and legacy BLE reports to Xbox 360 packets" {
     for ([_]u8{ REPORT_ID_BLE_STATE, REPORT_ID_BLE_TIMESTAMP_STATE }) |report_id| {
         var report = [_]u8{0} ** 64;
         report[0] = report_id;
-        putU32Le(&report, 2, SteamButtons.A | SteamButtons.DPAD_UP | SteamButtons.MENU);
+        putU32Le(&report, 2, Buttons.A | Buttons.DPAD_UP | Buttons.MENU);
         putI16Le(&report, 6, 0);
         putI16Le(&report, 8, 32767);
         putI16Le(&report, 10, 100);
@@ -159,8 +159,8 @@ test "maps current and legacy BLE reports to VIIPER packets" {
         putI16Le(&report, 14, -200);
         putI16Le(&report, 16, 1234);
 
-        var packet = [_]u8{0xaa} ** VIIPER_PACKET_SIZE;
-        try mapTritonToViiper(&report, &packet);
+        var packet = [_]u8{0xaa} ** XBOX360_PACKET_SIZE;
+        try mapTritonToXbox360(&report, &packet);
 
         const expected_buttons = XboxButtons.A | XboxButtons.DPAD_UP | XboxButtons.START;
         try std.testing.expectEqual(@as(u32, expected_buttons), u32Le(&packet, 0));
@@ -174,12 +174,12 @@ test "maps current and legacy BLE reports to VIIPER packets" {
     }
 }
 
-test "rejects invalid buffers" {
-    var packet = [_]u8{0} ** VIIPER_PACKET_SIZE;
-    try std.testing.expectError(error.ReportTooShort, mapTritonToViiper(&[_]u8{0x45}, &packet));
+test "Xbox 360 mapper rejects invalid buffers" {
+    var packet = [_]u8{0} ** XBOX360_PACKET_SIZE;
+    try std.testing.expectError(error.ReportTooShort, mapTritonToXbox360(&[_]u8{0x45}, &packet));
 
     var report = [_]u8{0} ** 18;
     report[0] = 0x99;
-    try std.testing.expectError(error.UnsupportedReport, mapTritonToViiper(&report, &packet));
-    try std.testing.expectError(error.OutputBufferTooSmall, mapTritonToViiper(&report, packet[0..19]));
+    try std.testing.expectError(error.UnsupportedReport, mapTritonToXbox360(&report, &packet));
+    try std.testing.expectError(error.OutputBufferTooSmall, mapTritonToXbox360(&report, packet[0..19]));
 }

@@ -1,6 +1,6 @@
 # Steamless Link host
 
-This directory contains the Steam-host half of SteamlessLink: a small Zig/Linux daemon that creates a virtual Steam Controller using `/dev/uhid` and proxies Steam's hidraw feature/output traffic back to a controller.
+This directory contains the Steam-host half of SteamlessLink: a small Zig/Linux daemon that creates a virtual Steam Controller using `/dev/uhid` and proxies Steam's hidraw feature/output traffic back to a controller. A client may instead send device information first, causing the host to create that HID descriptor and identity, including a standard generic gamepad.
 
 ## Requirements
 
@@ -14,6 +14,7 @@ Useful upstream docs:
 
 - Linux UHID: <https://docs.kernel.org/hid/uhid.html>
 - Linux hidraw: <https://docs.kernel.org/hid/hidraw.html>
+- Linux gamepad specification: <https://docs.kernel.org/input/gamepad.html>
 - udev rules: <https://www.freedesktop.org/software/systemd/man/latest/udev.html>
 - systemd services: <https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html>
 - nginx stream proxy, if you want a TCP reverse proxy: <https://nginx.org/en/docs/stream/ngx_stream_proxy_module.html>
@@ -76,9 +77,12 @@ Controller -> host:
 - `0x02 FRAME_GET_REPORT_REPLY`: `u32le request_id`, `u16le errno`, report bytes
 - `0x03 FRAME_SET_REPORT_REPLY`: `u32le request_id`, `u16le errno`
 - `0x04 FRAME_DEVICE_INFO`: `u32le bus`, `u16le vendor`, `u16le product`,
-  `u16le descriptor_length`, HID report descriptor. It must precede input; the
-  host mirrors that physical HID identity and descriptor in its UHID device.
-  Clients without this frame use the legacy Triton BLE descriptor.
+  `u16le descriptor_length`, HID report descriptor, then optionally `u8
+  name_length`, UTF-8 name bytes. The trailing name extension is omitted when empty,
+  so old clients retain the original frame shape. It must precede input; the
+  host mirrors that identity, descriptor, and optional host-visible name in its
+  UHID device. Clients without this frame use the legacy Triton BLE descriptor.
+  Names are limited to 127 non-NUL UTF-8 bytes.
 - `0x05 FRAME_GET_IROH_TICKET`: empty one-shot request. Available only when
   `--iroh-ticket-file` points at the proxy's private ticket file.
 

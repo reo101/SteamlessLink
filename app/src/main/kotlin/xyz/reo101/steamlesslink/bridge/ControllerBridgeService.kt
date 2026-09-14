@@ -14,15 +14,15 @@ import android.util.Log
 import xyz.reo101.steamlesslink.R
 import xyz.reo101.steamlesslink.ble.BleTritonTransport
 import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
+import xyz.reo101.steamlesslink.protocol.GenericGamepadProtocol
 import xyz.reo101.steamlesslink.protocol.NativeProtocol
-import xyz.reo101.steamlesslink.protocol.TritonProtocol
+import xyz.reo101.steamlesslink.protocol.RawProtocol
+import xyz.reo101.steamlesslink.protocol.Xbox360Protocol
 import xyz.reo101.steamlesslink.raw.UhidRawClient
 import xyz.reo101.steamlesslink.raw.irohRawUhidConnection
 import xyz.reo101.steamlesslink.triton.FakeTritonTransport
 import xyz.reo101.steamlesslink.triton.TritonReportParser
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
-import xyz.reo101.steamlesslink.viiper.ViiperDeviceStream
-import xyz.reo101.steamlesslink.viiper.viiperClient
 import java.io.Closeable
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -31,8 +31,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 class ControllerBridgeService : Service() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "controller-bridge") }
-    private val streamRef = AtomicReference<ViiperDeviceStream?>(null)
     private val rawClientRef = AtomicReference<UhidRawClient?>(null)
+    private val rawModeRef = AtomicReference<String?>(null)
     private val localUinputRef = AtomicReference<LocalUinputXbox360Output?>(null)
     private val bridgeGeneration = AtomicLong(0)
     private var tritonTransport: Closeable? = null
@@ -51,7 +51,6 @@ class ControllerBridgeService : Service() {
         val host = intent?.getStringExtra(EXTRA_HOST) ?: DEFAULT_HOST
         val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
         val transport = intent?.getStringExtra(EXTRA_TRANSPORT) ?: TRANSPORT_BLE
-        val key = intent?.getStringExtra(EXTRA_KEY)
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
         val irohTicket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
         val target = when (mode) {
@@ -62,7 +61,7 @@ class ControllerBridgeService : Service() {
         val modeLabel = when (mode) {
             MODE_UHID_RAW -> "Steamless Link"
             MODE_UHID_RAW_IROH -> "Steamless Link Iroh"
-            MODE_VIIPER_XBOX360 -> "VIIPER Xbox"
+            MODE_UHID_GENERIC_GAMEPAD -> "Generic HID Gamepad"
             MODE_LOCAL_UINPUT_XBOX360 -> "Local Xbox (Shizuku/root)"
             else -> mode
         }
@@ -79,19 +78,19 @@ class ControllerBridgeService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        if ((mode == MODE_VIIPER_XBOX360 || mode == MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable) {
+        if ((mode == MODE_UHID_GENERIC_GAMEPAD || mode == MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable) {
             status("$modeLabel is unavailable: bundled Zig protocol library failed to load")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        startBridge(host, port, key, transport, mode, irohTicket)
+        startBridge(host, port, transport, mode, irohTicket)
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startBridge(host: String, port: Int, key: String?, transport: String, mode: String, irohTicket: String = "") {
+    private fun startBridge(host: String, port: Int, transport: String, mode: String, irohTicket: String = "") {
         stopBridge()
         val generation = bridgeGeneration.incrementAndGet()
         status("Starting ${transport.lowercase()} capture")
@@ -107,7 +106,7 @@ class ControllerBridgeService : Service() {
                 if (mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH) bindProcessToWifiIfAvailable()
                 if (!isCurrentBridge(generation)) return@runCatching
                 if (!awaitCaptureReady(generation)) return@runCatching
-                if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH) {
+                if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH || mode == MODE_UHID_GENERIC_GAMEPAD) {
                     runRawBridge(host, port, mode, irohTicket, generation)
                     return@runCatching
                 }
@@ -125,39 +124,10 @@ class ControllerBridgeService : Service() {
                     return@runCatching
                 }
 
-                val authText = if (key.isNullOrBlank()) "plaintext" else "authenticated"
-                status("Connecting to VIIPER at $host:$port ($authText)")
-                val viiper = runCatching {
-                    viiperClient(host, port, key).also { it.ping() }
-                }.getOrElse { error ->
-                    if (!key.isNullOrBlank()) {
-                        status("Authenticated VIIPER connect failed; retrying plaintext (${error.message ?: error::class.java.simpleName})")
-                        viiperClient(host, port, null).also { it.ping() }
-                    } else {
-                        throw error
-                    }
-                }
-                if (!isCurrentBridge(generation)) return@runCatching
-                val ping = viiper.ping()
-                status("VIIPER: ${ping.optString("server", "?")} ${ping.optString("version", "")}")
-                val ref = viiper.createXbox360Device()
-                status("Created VIIPER xbox360 device bus=${ref.busId} dev=${ref.devId}")
-                val stream = viiper.openDeviceStream(ref)
-                if (!isCurrentBridge(generation)) {
-                    stream.close()
-                    return@runCatching
-                }
-                streamRef.set(stream)
-                synchronized(closeables) { closeables.add(stream) }
-                status("Connected to VIIPER stream; forwarding reports")
+                error("Unknown bridge mode: $mode")
             }.onFailure { error ->
-                val target = when (mode) {
-                    MODE_UHID_RAW, MODE_UHID_RAW_IROH -> "Steamless Link"
-                    MODE_LOCAL_UINPUT_XBOX360 -> "local uinput"
-                    else -> "VIIPER"
-                }
-                status("Capture is running, but $target connect failed: ${error.message ?: error::class.java.simpleName}")
-                Log.e(TAG, "$target startup failed", error)
+                status("Capture is running, but bridge startup failed: ${error.message ?: error::class.java.simpleName}")
+                Log.e(TAG, "Bridge startup failed", error)
             }
         }
     }
@@ -166,6 +136,7 @@ class ControllerBridgeService : Service() {
         while (isCurrentBridge(generation)) {
             var raw: UhidRawClient? = null
             try {
+                val initialDeviceInfo = if (mode == MODE_UHID_GENERIC_GAMEPAD) genericGamepadDeviceInfo() else null
                 raw = if (mode == MODE_UHID_RAW_IROH) {
                     status("Connecting to Steamless Link host over Iroh")
                     UhidRawClient(
@@ -174,6 +145,7 @@ class ControllerBridgeService : Service() {
                         onGetReport = ::handleRawGetReport,
                         onSetReport = ::handleRawSetReport,
                         onOutputReport = ::handleRawOutputReport,
+                        initialDeviceInfo = initialDeviceInfo,
                     )
                 } else {
                     status("Connecting to Steamless Link host at $host:$port")
@@ -184,12 +156,20 @@ class ControllerBridgeService : Service() {
                         onGetReport = ::handleRawGetReport,
                         onSetReport = ::handleRawSetReport,
                         onOutputReport = ::handleRawOutputReport,
+                        initialDeviceInfo = initialDeviceInfo,
                     )
                 }
                 if (!isCurrentBridge(generation)) return
+                rawModeRef.set(mode)
                 rawClientRef.set(raw)
                 synchronized(closeables) { closeables.add(raw) }
-                status("Connected to Steamless Link host; forwarding Triton reports")
+                status(
+                    if (mode == MODE_UHID_GENERIC_GAMEPAD) {
+                        "Connected to Steamless Link host; forwarding generic HID gamepad reports"
+                    } else {
+                        "Connected to Steamless Link host; forwarding Triton reports"
+                    },
+                )
                 while (isCurrentBridge(generation) && !raw.awaitClosed(RAW_CONNECTION_WAIT_MS)) Unit
             } catch (error: Exception) {
                 if (isCurrentBridge(generation)) {
@@ -199,6 +179,7 @@ class ControllerBridgeService : Service() {
             } finally {
                 raw?.let { client ->
                     rawClientRef.compareAndSet(client, null)
+                    rawModeRef.compareAndSet(mode, null)
                     client.close()
                     synchronized(closeables) { closeables.remove(client) }
                 }
@@ -301,7 +282,12 @@ class ControllerBridgeService : Service() {
         val rawClient = rawClientRef.get()
         if (rawClient != null) {
             runCatching {
-                if (!rawClient.sendInputReport(triton.rawReport, triton.rawReport.size)) {
+                val outputReport = if (rawModeRef.get() == MODE_UHID_GENERIC_GAMEPAD) {
+                    mapTritonToGenericGamepad(report, length)
+                } else {
+                    triton.rawReport
+                }
+                if (!rawClient.sendInputReport(outputReport, outputReport.size)) {
                     rawClientRef.compareAndSet(rawClient, null)
                     rawClient.close()
                     status("Steamless Link stream is closed")
@@ -329,39 +315,34 @@ class ControllerBridgeService : Service() {
             return
         }
 
-        val stream = streamRef.get()
-        if (stream == null) {
-            if (now - lastDroppedStatusAtMs >= DROPPED_STATUS_INTERVAL_MS) {
-                lastDroppedStatusAtMs = now
-                status("Receiving Triton reports, but no output stream is open")
-            }
-            return
+        if (now - lastDroppedStatusAtMs >= DROPPED_STATUS_INTERVAL_MS) {
+            lastDroppedStatusAtMs = now
+            status("Receiving Triton reports, but no output stream is open")
         }
-        runCatching { sendViiperReport(stream, report, length) }
-            .onFailure { error ->
-                if (streamRef.compareAndSet(stream, null)) {
-                    runCatching { stream.close() }
-                    synchronized(closeables) { closeables.remove(stream) }
-                }
-                status("VIIPER stream write failed: ${error.message ?: error::class.java.simpleName}")
-                Log.e(TAG, "VIIPER stream write failed", error)
-            }
-    }
-
-    private fun sendViiperReport(stream: ViiperDeviceStream, report: ByteArray, length: Int) {
-        val nativePacket = ByteArray(TritonProtocol.VIIPER_PACKET_SIZE)
-        check(NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
-            "Zig protocol mapper is unavailable on this device"
-        }
-        stream.sendPacket(nativePacket)
     }
 
     private fun sendLocalUinputReport(output: LocalUinputXbox360Output, report: ByteArray, length: Int) {
-        val nativePacket = ByteArray(TritonProtocol.VIIPER_PACKET_SIZE)
-        check(NativeProtocol.tryMapTritonToViiper(report, length, nativePacket)) {
+        val nativePacket = ByteArray(Xbox360Protocol.PACKET_SIZE)
+        check(NativeProtocol.tryMapTritonToXbox360(report, length, nativePacket)) {
             "Zig protocol mapper is unavailable on this device"
         }
         output.sendPacket(nativePacket)
+    }
+
+    private fun genericGamepadDeviceInfo(): ByteArray = RawProtocol.encodeDeviceInfo(
+        bus = GenericGamepadProtocol.BUS_USB,
+        vendor = GenericGamepadProtocol.VENDOR_ID,
+        product = GenericGamepadProtocol.PRODUCT_ID,
+        descriptor = GenericGamepadProtocol.REPORT_DESCRIPTOR,
+        name = GenericGamepadProtocol.DEVICE_NAME,
+    )
+
+    private fun mapTritonToGenericGamepad(report: ByteArray, length: Int): ByteArray {
+        val packet = ByteArray(GenericGamepadProtocol.INPUT_REPORT_SIZE)
+        check(NativeProtocol.tryMapTritonToGenericGamepad(report, length, packet)) {
+            "Zig protocol mapper is unavailable on this device"
+        }
+        return packet
     }
 
     private fun awaitCaptureReady(generation: Long): Boolean {
@@ -419,8 +400,8 @@ class ControllerBridgeService : Service() {
 
     private fun stopBridge() {
         bridgeGeneration.incrementAndGet()
-        streamRef.getAndSet(null)
         rawClientRef.getAndSet(null)
+        rawModeRef.set(null)
         localUinputRef.getAndSet(null)
         clearProcessNetworkBinding()
         synchronized(closeables) {
@@ -485,7 +466,6 @@ class ControllerBridgeService : Service() {
         const val EXTRA_HOST = "xyz.reo101.steamlesslink.extra.HOST"
         const val EXTRA_PORT = "xyz.reo101.steamlesslink.extra.PORT"
         const val EXTRA_TRANSPORT = "xyz.reo101.steamlesslink.extra.TRANSPORT"
-        const val EXTRA_KEY = "xyz.reo101.steamlesslink.extra.KEY"
         const val EXTRA_MODE = "xyz.reo101.steamlesslink.extra.MODE"
         const val EXTRA_IROH_TICKET = "xyz.reo101.steamlesslink.extra.IROH_TICKET"
         const val ACTION_STATUS = "xyz.reo101.steamlesslink.action.STATUS"
@@ -495,7 +475,7 @@ class ControllerBridgeService : Service() {
         const val TRANSPORT_FAKE = "fake"
         const val MODE_UHID_RAW = "uhid-raw"
         const val MODE_UHID_RAW_IROH = "uhid-raw-iroh"
-        const val MODE_VIIPER_XBOX360 = "viiper-xbox360"
+        const val MODE_UHID_GENERIC_GAMEPAD = "uhid-generic-gamepad"
         const val MODE_LOCAL_UINPUT_XBOX360 = "local-uinput-xbox360"
         private const val DEFAULT_HOST = ""
         private const val DEFAULT_PORT = 3244

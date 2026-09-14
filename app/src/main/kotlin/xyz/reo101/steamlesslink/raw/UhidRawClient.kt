@@ -48,6 +48,7 @@ class UhidRawClient(
     private val onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
     private val onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
     private val onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
+    private val initialDeviceInfo: ByteArray? = null,
 ) : Closeable {
     constructor(
         host: String,
@@ -56,6 +57,7 @@ class UhidRawClient(
         onGetReport: (requestId: Int, reportNumber: Int, reportType: Int) -> ByteArray?,
         onSetReport: (requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray) -> Boolean,
         onOutputReport: (reportType: Int, data: ByteArray) -> Boolean,
+        initialDeviceInfo: ByteArray? = null,
         connectTimeoutMs: Int = 10_000,
     ) : this(
         connection = RawUhidConnection.tcp(host, port, connectTimeoutMs),
@@ -63,6 +65,7 @@ class UhidRawClient(
         onGetReport = onGetReport,
         onSetReport = onSetReport,
         onOutputReport = onOutputReport,
+        initialDeviceInfo = initialDeviceInfo,
     )
 
     private val input = DataInputStream(connection.input)
@@ -71,6 +74,19 @@ class UhidRawClient(
     private val closedLatch = CountDownLatch(1)
     private val inputQueueLock = Object()
     private val queuedInputReports = ArrayDeque<ByteArray>()
+
+    init {
+        try {
+            initialDeviceInfo?.let { payload ->
+                require(payload.size <= RawProtocol.MAX_FRAME_PAYLOAD)
+                sendFrame(RawProtocol.FRAME_DEVICE_INFO, payload)
+            }
+        } catch (error: Exception) {
+            runCatching { connection.close() }
+            throw error
+        }
+    }
+
     private val writer = Thread(::writeLoop, "steamless-link-writer").apply {
         isDaemon = true
         start()

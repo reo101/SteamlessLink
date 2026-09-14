@@ -8,14 +8,14 @@ Preferred path:
 Steam Controller BLE -> Android GATT -> raw Triton reports -> TCP -> Steamless Link host -> virtual controller -> Steam
 ```
 
-Fallback paths:
+Alternative paths:
 
 ```text
-Steam Controller BLE/USB -> Android -> Zig Triton mapper -> VIIPER Xbox 360 stream
+Steam Controller BLE/USB -> Android -> Zig generic-HID mapper -> TCP -> Steamless Link host -> generic UHID gamepad -> Steam
 Steam Controller BLE/USB -> Android -> Zig Triton mapper -> local /dev/uinput Xbox gamepad
 ```
 
-The Steamless Link path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. The VIIPER path is a known-good remote Xbox 360 fallback. The local uinput path is for Android games/apps on the phone and requires Shizuku shell access or root.
+The Steamless Link path preserves the controller as a Valve/Steam Controller device, so Steam can use native Steam Controller configuration, battery queries, ping, and haptics. `Generic HID Gamepad` instead creates a standard Linux HID gamepad, with ordinary buttons, sticks, triggers, and a hat switch. It has no output or haptics yet. The local uinput path is for Android games/apps on the phone and requires Shizuku shell access or root.
 
 ## Build / install Android app
 
@@ -25,8 +25,8 @@ nix develop -c gradle :app:installDebug
 ```
 
 The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
-`x86_64`. VIIPER and local Xbox mode report that they are unavailable when the
-native library cannot load; raw transport still works. Omit it only for a
+`x86_64`. Generic HID Gamepad and local Xbox mode report that they are unavailable
+when the native library cannot load; raw transport still works. Omit it only for a
 raw-transport-only build:
 
 ```sh
@@ -67,6 +67,13 @@ That command builds the app and test APKs, boots a headless Android emulator,
 verifies the bundled Zig mapper through instrumentation, then starts the app in
 fake controller mode through `MainActivity` and checks raw `0x45` input frames.
 
+To exercise the generic profile's device-info frame and its 10-byte HID reports
+instead:
+
+```sh
+STEAMLESS_ANDROID_TEST_MODE=uhid-generic-gamepad nix run .#android-emulator-link-test
+```
+
 To test the same Android fake transport against the repo's NixOS host module
 and real Linux controller plumbing, run the optional VM integration app:
 
@@ -79,19 +86,16 @@ checks/CI.
 
 ## Android app configuration
 
-Remote Steamless Link and VIIPER modes need a host/IP and port. Local uinput
-mode does not use a remote server.
+Remote Steamless Link and Generic HID Gamepad modes need a host/IP and port.
+Local uinput mode does not use a remote server.
 
-Default port conventions used by the UI:
-
-- Steamless Link: `3244`
-- VIIPER Xbox fallback: `3242`
+The UI defaults the remote controller modes to Steamless Link port `3244`.
 
 The main UI has a BLE/USB transport toggle, a connection method dropdown, and Start/Stop buttons:
 
 - `Steamless Link` — preferred controller path over TCP host/IP + port
 - `Steamless Link Iroh` — controller path over an Iroh endpoint ticket
-- `VIIPER Xbox` — VIIPER Xbox 360 fallback
+- `Generic HID Gamepad` — standard HID gamepad over direct raw TCP; no haptics yet
 - `Local Xbox (Shizuku/root)` — local Android virtual Xbox 360 gamepad via `/dev/uinput`
 
 USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
@@ -237,7 +241,7 @@ The app will:
 - proxy Steam feature reports through BLE report characteristic `100f6c34`
 - proxy Steam output reports through BLE output characteristics `100f6cb5` through `100f6cbe`
 
-In Steamless Link mode the app does **not** run its own periodic lizard-mode refresh; Steam owns feature/report traffic. In VIIPER fallback mode the app periodically sends lizard-mode-off itself.
+In Steamless Link mode, including Iroh, the app does **not** run its own periodic lizard-mode refresh; Steam owns feature/report traffic. In Generic HID Gamepad and Local Xbox modes the app periodically sends lizard-mode-off itself.
 
 Useful logs while developing:
 

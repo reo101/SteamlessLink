@@ -1,4 +1,5 @@
-const protocol = @import("steamless-core").triton;
+const generic_gamepad = @import("steamless-core").generic_gamepad;
+const triton = @import("steamless-core").triton;
 
 const jint = i32;
 const jsize = i32;
@@ -29,7 +30,7 @@ const JNINativeInterface = extern struct {
 };
 const JNIEnv = *const JNINativeInterface;
 
-export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToViiper(
+export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToXbox360(
     env: *JNIEnv,
     thiz: jobject,
     report_array: jbyteArray,
@@ -38,48 +39,95 @@ export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonT
 ) jboolean {
     _ = thiz;
 
-    mapTritonToViiper(env, report_array, requested_length, out_packet_array) catch |err| {
+    mapTritonToXbox360(env, report_array, requested_length, out_packet_array) catch |err| {
         throwZigError(env, err);
         return JNI_FALSE;
     };
     return JNI_TRUE;
 }
 
-fn mapTritonToViiper(
+export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToGenericGamepad(
+    env: *JNIEnv,
+    thiz: jobject,
+    report_array: jbyteArray,
+    requested_length: jint,
+    out_packet_array: jbyteArray,
+) jboolean {
+    _ = thiz;
+
+    mapTritonToGenericGamepad(env, report_array, requested_length, out_packet_array) catch |err| {
+        throwZigError(env, err);
+        return JNI_FALSE;
+    };
+    return JNI_TRUE;
+}
+
+fn mapTritonToXbox360(
     env: *JNIEnv,
     report_array: jbyteArray,
     requested_length: jint,
     out_packet_array: jbyteArray,
 ) !void {
-    if (requested_length < 0) return error.InvalidLength;
-
-    const report_array_len = env.*.GetArrayLength(env, report_array);
     const out_array_len = env.*.GetArrayLength(env, out_packet_array);
-    if (out_array_len < protocol.VIIPER_PACKET_SIZE) return error.OutputBufferTooSmall;
+    if (out_array_len < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
+
+    var report = [_]u8{0} ** MAX_TRITON_REPORT_BYTES;
+    const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
+    var packet = [_]u8{0} ** triton.XBOX360_PACKET_SIZE;
+    try triton.mapTritonToXbox360(report_bytes, &packet);
+    env.*.SetByteArrayRegion(
+        env,
+        out_packet_array,
+        0,
+        triton.XBOX360_PACKET_SIZE,
+        @ptrCast(&packet),
+    );
+}
+
+fn mapTritonToGenericGamepad(
+    env: *JNIEnv,
+    report_array: jbyteArray,
+    requested_length: jint,
+    out_packet_array: jbyteArray,
+) !void {
+    const out_array_len = env.*.GetArrayLength(env, out_packet_array);
+    if (out_array_len < generic_gamepad.INPUT_REPORT_SIZE) return error.OutputBufferTooSmall;
+
+    var report = [_]u8{0} ** MAX_TRITON_REPORT_BYTES;
+    const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
+    var packet = [_]u8{0} ** generic_gamepad.INPUT_REPORT_SIZE;
+    try generic_gamepad.mapTritonToInput(report_bytes, &packet);
+    env.*.SetByteArrayRegion(
+        env,
+        out_packet_array,
+        0,
+        generic_gamepad.INPUT_REPORT_SIZE,
+        @ptrCast(&packet),
+    );
+}
+
+fn readTritonReport(
+    env: *JNIEnv,
+    report_array: jbyteArray,
+    requested_length: jint,
+    out: *[MAX_TRITON_REPORT_BYTES]u8,
+) ![]const u8 {
+    if (requested_length < 0) return error.InvalidLength;
+    const report_array_len = env.*.GetArrayLength(env, report_array);
     if (requested_length > report_array_len) return error.InvalidLength;
 
     const requested_len: usize = @intCast(requested_length);
     const copy_len = @min(requested_len, MAX_TRITON_REPORT_BYTES);
-    var report = [_]u8{0} ** MAX_TRITON_REPORT_BYTES;
     if (copy_len > 0) {
         env.*.GetByteArrayRegion(
             env,
             report_array,
             0,
             @intCast(copy_len),
-            @ptrCast(&report),
+            @ptrCast(out),
         );
     }
-
-    var packet = [_]u8{0} ** protocol.VIIPER_PACKET_SIZE;
-    try protocol.mapTritonToViiper(report[0..copy_len], &packet);
-    env.*.SetByteArrayRegion(
-        env,
-        out_packet_array,
-        0,
-        protocol.VIIPER_PACKET_SIZE,
-        @ptrCast(&packet),
-    );
+    return out[0..copy_len];
 }
 
 fn throwZigError(env: *JNIEnv, err: anyerror) void {

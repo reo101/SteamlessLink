@@ -154,6 +154,148 @@ let
     '';
   };
 
+  genericGamepad = {
+    name = "SteamlessLink Generic Gamepad";
+    hidDeviceGlob = "/sys/bus/hid/devices/0003:0000:0000.*/hidraw/hidraw*";
+    inputEventGlob = "/sys/bus/hid/devices/0003:0000:0000.*/input/input*/event*";
+    inputReport = "01410c0100ff123411ee";
+    reportDescriptorHex = "05010905a101850105091901290f150025017501950f810275019501810305010939150025073500463b0165147504950181427504950181036500150026ff00750895060930093109330934093209358102c0";
+  };
+
+  steamlessGenericPhoneClient = pkgs.writeTextFile {
+    name = "steamless-generic-phone-client";
+    executable = true;
+    destination = "/bin/steamless-generic-phone-client";
+    text = /* python */ ''
+      #!${lib.getExe pkgs.python3}
+      import pathlib, socket, struct, time, traceback
+
+      STEAM_HOST = '${testNetwork.steam.hostName}'
+      STEAM_PORT = ${toString uhidServer.listenPort}
+      READY_PATH = pathlib.Path('/tmp/generic-client-ready')
+      DONE_PATH = pathlib.Path('/tmp/generic-client-done')
+      FAILED_PATH = pathlib.Path('/tmp/generic-client-failed')
+      FRAME_INPUT = 0x01
+      FRAME_DEVICE_INFO = 0x04
+      REPORT_DESCRIPTOR = bytes.fromhex('${genericGamepad.reportDescriptorHex}')
+      NAME = b'${genericGamepad.name}'
+      ACTIVE_REPORT = bytes.fromhex('${genericGamepad.inputReport}')
+      NEUTRAL_REPORT = bytes([0x01, 0x00, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00])
+
+      def send_frame(sock, frame_type, payload):
+          sock.sendall(bytes([frame_type]) + struct.pack('!H', len(payload)) + payload)
+
+      def main():
+          device_info = (
+              struct.pack('<IHHH', 0x0003, 0x0000, 0x0000, len(REPORT_DESCRIPTOR))
+              + REPORT_DESCRIPTOR
+              + bytes([len(NAME)])
+              + NAME
+          )
+          with socket.create_connection((STEAM_HOST, STEAM_PORT), timeout=10) as sock:
+              sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+              send_frame(sock, FRAME_DEVICE_INFO, device_info)
+              READY_PATH.write_text('ready\n')
+              for index in range(1000):
+                  send_frame(sock, FRAME_INPUT, ACTIVE_REPORT if index % 2 else NEUTRAL_REPORT)
+                  time.sleep(0.004)
+          DONE_PATH.write_text('ok\n')
+
+      try:
+          main()
+      except Exception as exc:
+          FAILED_PATH.write_text(str(exc) + '\n')
+          traceback.print_exc()
+          raise
+    '';
+  };
+
+  verifyGenericGamepad = pkgs.writeTextFile {
+    name = "verify-steamless-generic-gamepad";
+    executable = true;
+    destination = "/bin/verify-steamless-generic-gamepad";
+    text = /* python */ ''
+      #!${lib.getExe pkgs.python3}
+      import glob, os, pathlib, select, struct, time
+
+      HID_DEVICE_GLOB = '${genericGamepad.hidDeviceGlob}'
+      INPUT_EVENT_GLOB = '${genericGamepad.inputEventGlob}'
+      NAME = '${genericGamepad.name}'
+      ACTIVE_REPORT = bytes.fromhex('${genericGamepad.inputReport}')
+      REPORT_DESCRIPTOR = bytes.fromhex('${genericGamepad.reportDescriptorHex}')
+      EV_KEY = 0x01
+      EV_ABS = 0x03
+      BTN_SOUTH = 0x130
+      BTN_TL = 0x136
+      BTN_SELECT = 0x13a
+      BTN_START = 0x13b
+      ABS_X = 0x00
+      ABS_Y = 0x01
+      ABS_Z = 0x02
+      ABS_RX = 0x03
+      ABS_RY = 0x04
+      ABS_RZ = 0x05
+      ABS_HAT0X = 0x10
+      ABS_HAT0Y = 0x11
+      EVENT = struct.Struct('llHHi')
+
+      hidraw_sys = glob.glob(HID_DEVICE_GLOB)
+      assert hidraw_sys, 'generic gamepad hidraw node not found'
+      hidraw_name = os.path.basename(hidraw_sys[0])
+      hid_device = pathlib.Path('/sys/class/hidraw') / hidraw_name / 'device'
+      uevent = (hid_device / 'uevent').read_text()
+      assert 'HID_ID=0003:00000000:00000000' in uevent, uevent
+      assert (hid_device / 'report_descriptor').read_bytes() == REPORT_DESCRIPTOR
+
+      event_sys = glob.glob(INPUT_EVENT_GLOB)
+      assert event_sys, 'generic gamepad event node not found'
+      event_name = os.path.basename(event_sys[0])
+      event_root = pathlib.Path('/sys/class/input') / event_name
+      assert (event_root / 'device/name').read_text().strip() == NAME
+
+      expected_events = {
+          (EV_KEY, BTN_SOUTH, 1),
+          (EV_KEY, BTN_TL, 1),
+          (EV_KEY, BTN_SELECT, 1),
+          (EV_KEY, BTN_START, 1),
+          (EV_ABS, ABS_X, 0),
+          (EV_ABS, ABS_Y, 255),
+          (EV_ABS, ABS_Z, 17),
+          (EV_ABS, ABS_RX, 18),
+          (EV_ABS, ABS_RY, 52),
+          (EV_ABS, ABS_RZ, 238),
+          (EV_ABS, ABS_HAT0X, 1),
+          (EV_ABS, ABS_HAT0Y, -1),
+      }
+      seen_events = set()
+      saw_hidraw_report = False
+      hidraw_fd = os.open('/dev/' + hidraw_name, os.O_RDONLY | os.O_NONBLOCK)
+      event_fd = os.open('/dev/input/' + event_name, os.O_RDONLY | os.O_NONBLOCK)
+      try:
+          deadline = time.monotonic() + 5
+          while time.monotonic() < deadline:
+              ready, _, _ = select.select([hidraw_fd, event_fd], [], [], 0.25)
+              if hidraw_fd in ready:
+                  if os.read(hidraw_fd, 64) == ACTIVE_REPORT:
+                      saw_hidraw_report = True
+              if event_fd in ready:
+                  try:
+                      data = os.read(event_fd, EVENT.size * 64)
+                  except OSError as error:
+                      raise AssertionError((error, expected_events - seen_events, seen_events)) from error
+                  for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                      _, _, event_type, code, value = EVENT.unpack_from(data, offset)
+                      seen_events.add((event_type, code, value))
+              if saw_hidraw_report and expected_events.issubset(seen_events):
+                  break
+      finally:
+          os.close(hidraw_fd)
+          os.close(event_fd)
+      assert saw_hidraw_report, 'did not receive the generic HID report'
+      assert expected_events.issubset(seen_events), (expected_events - seen_events, seen_events)
+    '';
+  };
+
   verifySteamlessHidraw = pkgs.writeTextFile {
     name = "verify-steamless-link-host";
     executable = true;
@@ -279,5 +421,12 @@ in
     phone.succeed("grep -q '${steamController.outputReportHex}' ${phoneClientConfig.outputFramePath}")
     steam.wait_until_succeeds("journalctl -u steamless-link-host --no-pager | grep -q 'input reports='")
     steam.succeed("journalctl -u steamless-link-host --no-pager | grep -q 'UHID output'")
+
+    phone.succeed("${lib.getExe steamlessGenericPhoneClient} > /tmp/generic-client.log 2>&1 &")
+    phone.wait_until_succeeds("test -e /tmp/generic-client-ready")
+    steam.wait_until_succeeds("ls ${genericGamepad.hidDeviceGlob} >/dev/null")
+    steam.succeed("${lib.getExe verifyGenericGamepad}")
+    phone.wait_until_succeeds("test -e /tmp/generic-client-done -o -e /tmp/generic-client-failed")
+    phone.succeed("test -e /tmp/generic-client-done")
   '';
 }

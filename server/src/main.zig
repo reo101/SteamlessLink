@@ -495,6 +495,7 @@ const UhidDevice = struct {
             identity.bus = @intCast(info.bus);
             identity.vendor = info.vendor;
             identity.product = info.product;
+            if (info.name.len != 0) identity.name = info.name;
             break :blk info.descriptor;
         } else &default_descriptor;
 

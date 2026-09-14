@@ -12,25 +12,49 @@ internal object NativeProtocol {
         get() = loadError == null && !disabled
 
     /**
-     * Maps a raw Triton input report directly into a 20-byte VIIPER Xbox360
-     * packet. Returns `false` only when the native library is unavailable;
-     * protocol errors are translated to JVM exceptions by JNI.
+     * Maps a raw Triton input report directly into a 20-byte Xbox 360 packet.
+     * Returns `false` only when the native library is unavailable; protocol
+     * errors are translated to JVM exceptions by JNI.
      */
-    fun tryMapTritonToViiper(
+    fun tryMapTritonToXbox360(
         report: ByteArray,
         length: Int,
         outPacket: ByteArray,
     ): Boolean {
         if (!isAvailable) return false
         return try {
-            nativeMapTritonToViiper(report, length, outPacket)
+            nativeMapTritonToXbox360(report, length, outPacket)
         } catch (_: LinkageError) {
             disabled = true
             false
         }
     }
 
-    private external fun nativeMapTritonToViiper(
+    /**
+     * Maps a raw Triton input report into the numbered HID input report for the
+     * bundled generic gamepad profile. Returns `false` only when JNI is unavailable.
+     */
+    fun tryMapTritonToGenericGamepad(
+        report: ByteArray,
+        length: Int,
+        outPacket: ByteArray,
+    ): Boolean {
+        if (!isAvailable) return false
+        return try {
+            nativeMapTritonToGenericGamepad(report, length, outPacket)
+        } catch (_: LinkageError) {
+            disabled = true
+            false
+        }
+    }
+
+    private external fun nativeMapTritonToXbox360(
+        report: ByteArray,
+        length: Int,
+        outPacket: ByteArray,
+    ): Boolean
+
+    private external fun nativeMapTritonToGenericGamepad(
         report: ByteArray,
         length: Int,
         outPacket: ByteArray,

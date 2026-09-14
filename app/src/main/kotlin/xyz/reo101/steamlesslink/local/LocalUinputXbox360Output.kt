@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.content.pm.PackageManager
 import rikka.shizuku.Shizuku
-import xyz.reo101.steamlesslink.protocol.TritonProtocol
+import xyz.reo101.steamlesslink.protocol.Xbox360Protocol
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
@@ -19,7 +19,7 @@ class LocalUinputXbox360Output private constructor(
 
     @Synchronized
     fun sendPacket(packet: ByteArray) {
-        check(packet.size == TritonProtocol.VIIPER_PACKET_SIZE) { "expected ${TritonProtocol.VIIPER_PACKET_SIZE}-byte Xbox packet" }
+        check(packet.size == Xbox360Protocol.PACKET_SIZE) { "expected ${Xbox360Protocol.PACKET_SIZE}-byte Xbox packet" }
         if (closed.get()) return
         output.write(packet)
         output.flush()

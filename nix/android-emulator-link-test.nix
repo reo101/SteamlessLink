@@ -40,6 +40,11 @@ writeShellApplication {
     host_port="''${STEAMLESS_ANDROID_TEST_PORT:-33244}"
     iroh_port="''${STEAMLESS_ANDROID_IROH_PORT:-34244}"
     iroh_mode="''${STEAMLESS_ANDROID_TEST_IROH:-0}"
+    test_mode="''${STEAMLESS_ANDROID_TEST_MODE:-uhid-raw}"
+    case "$test_mode" in
+      uhid-raw|uhid-generic-gamepad) ;;
+      *) echo "error: unsupported STEAMLESS_ANDROID_TEST_MODE=$test_mode" >&2; exit 1 ;;
+    esac
     adb_serial="''${STEAMLESS_ANDROID_TEST_SERIAL:-emulator-5554}"
     tmp_parent="''${STEAMLESS_ANDROID_TEST_TMPDIR:-$project_root/.tmp/android-emulator}"
     mkdir -p "$tmp_parent"
@@ -136,9 +141,12 @@ writeShellApplication {
     result = pathlib.Path(sys.argv[2])
     log = pathlib.Path(sys.argv[3])
     ticket_file = pathlib.Path(sys.argv[4])
+    mode = sys.argv[5]
+    generic = mode == 'uhid-generic-gamepad'
     deadline = time.monotonic() + 45
     reports = 0
     saw_report = False
+    saw_device_info = False
     log.touch()
 
     def write_frame(sock, frame_type, payload):
@@ -184,17 +192,34 @@ writeShellApplication {
                         assert ticket, 'missing Iroh ticket'
                         write_frame(conn, 0x85, ticket)
                         break
+                    if frame_type == 0x04:
+                        assert generic, 'unexpected device info frame'
+                        assert size >= 11, size
+                        bus, vendor, product, descriptor_size = struct.unpack_from('<IHHH', payload)
+                        descriptor_end = 10 + descriptor_size
+                        assert (bus, vendor, product) == (3, 0, 0), (bus, vendor, product)
+                        assert payload[10:18] == bytes([0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01])
+                        assert size == descriptor_end + 1 + payload[descriptor_end], size
+                        assert payload[descriptor_end + 1:] == b'SteamlessLink Generic Gamepad'
+                        saw_device_info = True
+                        continue
                     if frame_type == 0x01:
                         reports += 1
-                        assert size == 46, size
-                        assert payload[0] == 0x45, payload.hex()
-                        if not saw_report:
-                            write_frame(conn, 0x81, bytes([0x01, 0x80, 1, 2, 3, 4]))
-                            saw_report = True
+                        if generic:
+                            assert saw_device_info, 'generic input preceded device info'
+                            assert size == 10, size
+                            assert payload[0] == 0x01, payload.hex()
+                        else:
+                            assert size == 46, size
+                            assert payload[0] == 0x45, payload.hex()
+                            if not saw_report:
+                                write_frame(conn, 0x81, bytes([0x01, 0x80, 1, 2, 3, 4]))
+                                saw_report = True
         assert reports >= 10, reports
-    result.write_text(f'ok reports={reports}\n')
+        assert not generic or saw_device_info
+    result.write_text(f'ok mode={mode} reports={reports}\n')
     PY
-    python3 "$workdir/raw-server.py" "$host_port" "$workdir/server-result" "$workdir/server.log" "$workdir/iroh-ticket" &
+    python3 "$workdir/raw-server.py" "$host_port" "$workdir/server-result" "$workdir/server.log" "$workdir/iroh-ticket" "$test_mode" &
     server_pid=$!
 
     apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"
@@ -216,7 +241,7 @@ writeShellApplication {
       for _ in $(seq 1 100); do [ -s "$workdir/iroh-ticket" ] && break; sleep 0.1; done
       mode=uhid-raw-iroh
     else
-      mode=uhid-raw
+      mode="$test_mode"
     fi
     "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
 
