@@ -6,6 +6,7 @@
 }:
 let
   cfg = config.services.steamless-link-host;
+  irohStateDirectory = "/var/lib/steamless-link-iroh-proxy";
 in
 {
   options.services.steamless-link-host = {
@@ -140,7 +141,9 @@ in
         ExecStart = lib.escapeShellArgs [
           "${cfg.iroh.package}/bin/steamless-link-iroh-proxy"
           "--identity-key"
-          "/var/lib/steamless-link-iroh-proxy/identity.key"
+          "${irohStateDirectory}/identity.key"
+          "--ticket-file"
+          "${irohStateDirectory}/ticket"
           "${cfg.iroh.targetHost}:${toString (if cfg.iroh.targetPort == null then cfg.listenPort else cfg.iroh.targetPort)}"
         ];
         StateDirectory = "steamless-link-iroh-proxy";
@@ -170,6 +173,10 @@ in
             (toString cfg.listenPort)
             "--log-level"
             cfg.logLevel
+          ]
+          ++ lib.optionals (cfg.iroh.enable && cfg.iroh.package != null) [
+            "--iroh-ticket-file"
+            "${irohStateDirectory}/ticket"
           ]
           ++ cfg.extraArgs
         );

@@ -8,11 +8,13 @@
 //! - FRAME_SET_REPORT_REPLY: u32le request_id, u16le errno
 //! - FRAME_DEVICE_INFO: HID bus, vendor/product IDs, and report descriptor;
 //!   it must precede input and lets the host mirror the physical HID device
+//! - FRAME_GET_IROH_TICKET: empty one-shot request for the host's Iroh ticket
 //!
 //! UHID server -> controller side:
 //! - FRAME_OUTPUT: u8 uhid_report_type, HID output report bytes
 //! - FRAME_GET_REPORT: u32le request_id, u8 report_number, u8 report_type
 //! - FRAME_SET_REPORT: u32le request_id, u8 report_number, u8 report_type, report bytes
+//! - FRAME_IROH_TICKET: endpoint ticket bytes
 
 const std = @import("std");
 const Io = std.Io;
@@ -21,9 +23,11 @@ pub const FRAME_INPUT: u8 = 0x01;
 pub const FRAME_GET_REPORT_REPLY: u8 = 0x02;
 pub const FRAME_SET_REPORT_REPLY: u8 = 0x03;
 pub const FRAME_DEVICE_INFO: u8 = 0x04;
+pub const FRAME_GET_IROH_TICKET: u8 = 0x05;
 pub const FRAME_OUTPUT: u8 = 0x81;
 pub const FRAME_GET_REPORT: u8 = 0x82;
 pub const FRAME_SET_REPORT: u8 = 0x83;
+pub const FRAME_IROH_TICKET: u8 = 0x85;
 pub const MAX_FRAME_PAYLOAD = 65535;
 pub const MAX_REPORT_DESCRIPTOR_SIZE = 4096;
 pub const DEVICE_INFO_HEADER_SIZE = 10;

@@ -108,14 +108,20 @@ printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
 steamless-link-host --listen-host 127.0.0.1 --listen-port 3244
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/steamless-link-iroh-proxy"
 install -d -m 700 "$state_dir"
-nix run .#steamless-link-iroh-proxy -- --identity-key "$state_dir/identity.key" 127.0.0.1:3244
+nix run .#steamless-link-iroh-proxy -- --identity-key "$state_dir/identity.key" --ticket-file "$state_dir/ticket" 127.0.0.1:3244
 ```
 
 The identity key is 32 secret bytes, mode `0600`. `STEAMLESS_IROH_IDENTITY_KEY`
 sets the same path for service managers; `--identity-key` takes precedence.
-Reuse it across restarts so existing tickets keep the same endpoint identity.
-Back it up only to migrate the host, keep it private, and do not run two hosts
-with the same key at once.
+`--ticket-file` (or `STEAMLESS_IROH_TICKET_FILE`) writes the current ticket as a
+private file for the host's raw-TCP bootstrap action. Reuse the identity key
+across restarts so existing tickets keep the same endpoint identity. Back it up
+only to migrate the host, keep it private, and do not run two hosts with the
+same key at once.
+
+In Android, set the direct raw TCP host and port, then tap `Fetch Iroh ticket &
+Start`. It retrieves the ticket once over that trusted direct path, saves it,
+and reconnects through Iroh.
 
 With the NixOS module, enable both services and read the ticket from the proxy
 journal:
@@ -134,6 +140,10 @@ services.steamless-link-host = {
 ```sh
 journalctl -u steamless-link-iroh-proxy -b -o cat | grep '^Forwarding Iroh ' | tail -1 | awk '{print $3}'
 ```
+
+The NixOS module wires its private ticket file into the host automatically.
+Only let trusted LAN/VPN peers reach the raw TCP port, they can request this
+Iroh route.
 
 ## Steam host
 

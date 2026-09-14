@@ -30,9 +30,11 @@ const FRAME_INPUT: u8 = 0x01;
 const FRAME_GET_REPORT_REPLY: u8 = 0x02;
 const FRAME_SET_REPORT_REPLY: u8 = 0x03;
 const FRAME_DEVICE_INFO: u8 = 0x04;
+const FRAME_GET_IROH_TICKET: u8 = 0x05;
 const FRAME_OUTPUT: u8 = 0x81;
 const FRAME_GET_REPORT: u8 = 0x82;
 const FRAME_SET_REPORT: u8 = 0x83;
+const FRAME_IROH_TICKET: u8 = 0x85;
 const MAX_FRAME_PAYLOAD = 65535;
 const DEVICE_INFO_HEADER_SIZE = 10;
 
@@ -84,6 +86,7 @@ const Config = struct {
     listen_host: []const u8 = "127.0.0.1",
     listen_port: u16 = 3244,
     uhid_path: []const u8 = "/dev/uhid",
+    iroh_ticket_file: ?[]const u8 = null,
     identity: UhidIdentity = .{},
     log_level: LogLevel = .info,
 };
@@ -102,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     var config = try parseArgs(argv);
-    try runServer(allocator, &config);
+    try runServer(init.io, allocator, &config);
 }
 
 fn parseArgs(argv: []const []const u8) !Config {
@@ -125,6 +128,10 @@ fn parseArgs(argv: []const []const u8) !Config {
             i += 1;
             if (i >= argv.len) return error.MissingArgument;
             config.uhid_path = argv[i];
+        } else if (std.mem.eql(u8, arg, "--iroh-ticket-file")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingArgument;
+            config.iroh_ticket_file = argv[i];
         } else if (std.mem.eql(u8, arg, "--name")) {
             i += 1;
             if (i >= argv.len) return error.MissingArgument;
@@ -170,6 +177,7 @@ fn printUsage() void {
         \\  --listen-host HOST   address to bind, default 127.0.0.1
         \\  --listen-port PORT   TCP port, default 3244
         \\  --uhid-path PATH     UHID device path, default /dev/uhid
+        \\  --iroh-ticket-file PATH  path served to trusted raw-TCP bootstrap clients
         \\  --name NAME          UHID device name
         \\  --phys PHYS          UHID physical path
         \\  --uniq UNIQ          UHID unique path
@@ -181,7 +189,7 @@ fn printUsage() void {
     , .{});
 }
 
-fn runServer(allocator: Allocator, config: *const Config) !void {
+fn runServer(io: std.Io, allocator: Allocator, config: *const Config) !void {
     const server_fd = try createListener(allocator, config);
     defer closeFd(server_fd);
 
@@ -191,10 +199,8 @@ fn runServer(allocator: Allocator, config: *const Config) !void {
             log(config, .warning, "accept failed: {s}", .{@errorName(err)});
             continue;
         };
-        replaceActiveClient(conn_fd);
-        const thread = std.Thread.spawn(.{}, handleClientThread, .{ conn_fd, config }) catch |err| {
+        const thread = std.Thread.spawn(.{}, handleClientThread, .{ conn_fd, config, io }) catch |err| {
             log(config, .warning, "client thread spawn failed: {s}", .{@errorName(err)});
-            clearActiveClient(conn_fd);
             closeFd(conn_fd);
             continue;
         };
@@ -202,8 +208,8 @@ fn runServer(allocator: Allocator, config: *const Config) !void {
     }
 }
 
-fn handleClientThread(conn_fd: c_int, config: *const Config) void {
-    handleClient(conn_fd, config) catch |err| {
+fn handleClientThread(conn_fd: c_int, config: *const Config, io: std.Io) void {
+    handleClient(conn_fd, config, io) catch |err| {
         log(config, .warning, "client failed: {s}", .{@errorName(err)});
     };
 }
@@ -266,9 +272,10 @@ fn acceptClient(server_fd: c_int) !c_int {
     }
 }
 
-fn handleClient(conn_fd: c_int, config: *const Config) !void {
+fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
+    var active = false;
     defer {
-        clearActiveClient(conn_fd);
+        if (active) clearActiveClient(conn_fd);
         closeFd(conn_fd);
     }
 
@@ -278,6 +285,27 @@ fn handleClient(conn_fd: c_int, config: *const Config) !void {
 
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
     var pending_frame: ?Frame = (try readFrame(conn_fd, &payload_buf)) orelse return;
+    if (pending_frame.?.frame_type == FRAME_GET_IROH_TICKET) {
+        if (pending_frame.?.payload.len != 0) {
+            log(config, .warning, "invalid Iroh ticket request", .{});
+            return;
+        }
+        const path = config.iroh_ticket_file orelse {
+            log(config, .warning, "Iroh ticket requested but no ticket file is configured", .{});
+            return;
+        };
+        const ticket = readIrohTicket(io, path, &payload_buf) catch |err| {
+            log(config, .warning, "Iroh ticket unavailable: {s}", .{@errorName(err)});
+            return;
+        };
+        try sendFrame(conn_fd, FRAME_IROH_TICKET, ticket);
+        log(config, .info, "served Iroh ticket to bootstrap client", .{});
+        return;
+    }
+
+    replaceActiveClient(conn_fd);
+    active = true;
+
     var device_info: ?DeviceInfo = null;
     if (pending_frame.?.frame_type == FRAME_DEVICE_INFO) {
         const info = decodeDeviceInfo(pending_frame.?.payload) orelse {
@@ -568,6 +596,16 @@ fn readFrame(fd: c_int, payload_buf: *[MAX_FRAME_PAYLOAD]u8) !?Frame {
     const size = (@as(usize, header[1]) << 8) | header[2];
     if (!try recvExact(fd, payload_buf[0..size])) return null;
     return .{ .frame_type = header[0], .payload = payload_buf[0..size] };
+}
+
+fn readIrohTicket(io: std.Io, path: []const u8, buffer: *[MAX_FRAME_PAYLOAD]u8) ![]const u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const len = try file.readPositionalAll(io, buffer, 0);
+    if (len == buffer.len and try file.readPositional(io, &.{buffer[0..1]}, len) != 0) return error.TicketTooLarge;
+    const ticket = std.mem.trim(u8, buffer[0..len], " \t\r\n");
+    if (ticket.len == 0) return error.TicketUnavailable;
+    return ticket;
 }
 
 fn recvExact(fd: c_int, out: []u8) !bool {

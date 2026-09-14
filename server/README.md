@@ -50,7 +50,7 @@ On NixOS, import `nixosModules.steamless-link-host` from this flake and enable `
 
 ## Security
 
-The current protocol is raw TCP and unauthenticated. Do not expose it to an untrusted network.
+The current protocol is raw TCP and unauthenticated. Do not expose it to an untrusted network. If `--iroh-ticket-file` is configured, raw-TCP peers can request the Iroh route too.
 
 Safer deployment options:
 
@@ -79,9 +79,12 @@ Controller -> host:
   `u16le descriptor_length`, HID report descriptor. It must precede input; the
   host mirrors that physical HID identity and descriptor in its UHID device.
   Clients without this frame use the legacy Triton BLE descriptor.
+- `0x05 FRAME_GET_IROH_TICKET`: empty one-shot request. Available only when
+  `--iroh-ticket-file` points at the proxy's private ticket file.
 
 Host -> controller:
 
 - `0x81 FRAME_OUTPUT`: `u8 uhid_report_type`, HID output report bytes
 - `0x82 FRAME_GET_REPORT`: `u32le request_id`, `u8 report_number`, `u8 report_type`
 - `0x83 FRAME_SET_REPORT`: `u32le request_id`, `u8 report_number`, `u8 report_type`, report bytes
+- `0x85 FRAME_IROH_TICKET`: endpoint ticket bytes

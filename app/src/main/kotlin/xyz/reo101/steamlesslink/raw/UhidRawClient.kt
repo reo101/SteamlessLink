@@ -8,6 +8,7 @@ import xyz.reo101.steamlesslink.util.u8
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -15,6 +16,27 @@ import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+
+private const val FRAME_GET_IROH_TICKET = 0x05
+private const val FRAME_IROH_TICKET = 0x85
+
+fun fetchIrohTicket(host: String, port: Int, connectTimeoutMs: Int = 10_000): String = Socket().use { socket ->
+    socket.tcpNoDelay = true
+    socket.soTimeout = connectTimeoutMs
+    socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
+    val output = DataOutputStream(socket.getOutputStream())
+    output.writeByte(FRAME_GET_IROH_TICKET)
+    output.writeShort(0)
+    output.flush()
+
+    val input = DataInputStream(socket.getInputStream())
+    val type = input.readUnsignedByte()
+    val length = input.readUnsignedShort()
+    if (type != FRAME_IROH_TICKET || length == 0) throw IOException("Iroh ticket is unavailable")
+    ByteArray(length).also(input::readFully).toString(Charsets.UTF_8).trim().also { ticket ->
+        if (ticket.isEmpty()) throw IOException("Iroh ticket is unavailable")
+    }
+}
 
 class UhidRawClient(
     private val connection: RawUhidConnection,

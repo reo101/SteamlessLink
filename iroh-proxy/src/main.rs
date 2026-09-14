@@ -25,32 +25,34 @@ async fn main() -> Result<()> {
         return connect(args[1].clone()).await;
     }
 
-    let (target, identity_key) = serve_args(args)?;
-    serve(target, identity_key.as_deref()).await
+    let (target, identity_key, ticket_file) = serve_args(args)?;
+    serve(target, identity_key.as_deref(), ticket_file.as_deref()).await
 }
 
-fn serve_args(args: Vec<String>) -> Result<(SocketAddr, Option<PathBuf>)> {
+fn serve_args(args: Vec<String>) -> Result<(SocketAddr, Option<PathBuf>, Option<PathBuf>)> {
     let mut args = args.into_iter();
     let mut identity_key = env::var_os("STEAMLESS_IROH_IDENTITY_KEY").map(PathBuf::from);
+    let mut ticket_file = env::var_os("STEAMLESS_IROH_TICKET_FILE").map(PathBuf::from);
     let mut target = None;
+    let usage = "usage: steamless-link-iroh-proxy [--identity-key PATH] [--ticket-file PATH] [tcp-host:port]";
 
     while let Some(arg) = args.next() {
         if arg == "--identity-key" {
-            identity_key = Some(PathBuf::from(args.next().context(
-                "usage: steamless-link-iroh-proxy [--identity-key PATH] [tcp-host:port]",
-            )?));
+            identity_key = Some(PathBuf::from(args.next().context(usage)?));
+        } else if arg == "--ticket-file" {
+            ticket_file = Some(PathBuf::from(args.next().context(usage)?));
         } else if arg.starts_with('-') {
             bail!("unknown option {arg}");
         } else if target.replace(arg).is_some() {
-            bail!("usage: steamless-link-iroh-proxy [--identity-key PATH] [tcp-host:port]");
+            bail!(usage);
         }
     }
 
     let target = target
         .unwrap_or_else(|| "127.0.0.1:3244".to_string())
         .parse::<SocketAddr>()
-        .context("usage: steamless-link-iroh-proxy [--identity-key PATH] [tcp-host:port]")?;
-    Ok((target, identity_key))
+        .context(usage)?;
+    Ok((target, identity_key, ticket_file))
 }
 
 fn load_or_create_secret_key(path: &Path) -> Result<SecretKey> {
@@ -119,7 +121,29 @@ fn write_secret_key(path: &Path, key: &SecretKey) -> std::io::Result<()> {
     file.sync_all()
 }
 
-async fn serve(target: SocketAddr, identity_key: Option<&Path>) -> Result<()> {
+fn write_ticket_file(path: &Path, ticket: &str) -> std::io::Result<()> {
+    let temporary = path.with_extension("tmp");
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(ticket.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(temporary, path)
+}
+
+async fn serve(target: SocketAddr, identity_key: Option<&Path>, ticket_file: Option<&Path>) -> Result<()> {
     let bind_addr = env::var("STEAMLESS_IROH_BIND_ADDR").ok();
     let mut builder = Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]);
     if let Some(path) = identity_key {
@@ -143,6 +167,10 @@ async fn serve(target: SocketAddr, identity_key: Option<&Path>) -> Result<()> {
         endpoint.addr()
     };
     let ticket = EndpointTicket::new(endpoint_addr).encode_string();
+    if let Some(path) = ticket_file {
+        write_ticket_file(path, &ticket)
+            .with_context(|| format!("write Iroh ticket to {}", path.display()))?;
+    }
     eprintln!("Forwarding Iroh {ticket} -> {target}");
     println!("{ticket}");
 
@@ -229,6 +257,25 @@ mod tests {
 
         assert_eq!(generated.to_bytes(), loaded.to_bytes());
         assert_eq!(fs::metadata(&path).unwrap().len(), 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ticket_file_is_private() {
+        let dir = temp_dir();
+        let path = dir.join("ticket");
+        write_ticket_file(&path, "endpoint-test").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "endpoint-test");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

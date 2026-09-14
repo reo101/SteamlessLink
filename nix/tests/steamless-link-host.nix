@@ -79,9 +79,11 @@ let
       FRAME_INPUT = 0x01
       FRAME_GET_REPORT_REPLY = 0x02
       FRAME_SET_REPORT_REPLY = 0x03
+      FRAME_GET_IROH_TICKET = 0x05
       FRAME_OUTPUT = 0x81
       FRAME_GET_REPORT = 0x82
       FRAME_SET_REPORT = 0x83
+      FRAME_IROH_TICKET = 0x85
 
       def send_frame(sock, frame_type, payload):
           sock.sendall(bytes([frame_type]) + struct.pack('!H', len(payload)) + payload)
@@ -101,6 +103,11 @@ let
           return header[0], recv_exact(sock, size)
 
       def main():
+          with socket.create_connection((STEAM_HOST, STEAM_PORT), timeout=10) as sock:
+              send_frame(sock, FRAME_GET_IROH_TICKET, b"")
+              frame_type, ticket = recv_frame(sock)
+              if frame_type != FRAME_IROH_TICKET or not ticket.startswith(b'endpoint'):
+                  raise RuntimeError('invalid Iroh ticket response')
           payload = bytes([INPUT_REPORT_ID]) + bytes(range(1, INPUT_REPORT_SIZE))
           READY_PATH.write_text('ready\n')
           with socket.create_connection((STEAM_HOST, STEAM_PORT), timeout=10) as sock:
@@ -257,6 +264,8 @@ in
     steam.succeed("test \"$(stat -c %a ${irohProxy.stateDirectory})\" = 700")
     steam.succeed("test \"$(stat -c %a ${irohProxy.stateDirectory}/identity.key)\" = 600")
     steam.succeed("test \"$(stat -c %s ${irohProxy.stateDirectory}/identity.key)\" = 32")
+    steam.wait_until_succeeds("test -s ${irohProxy.stateDirectory}/ticket")
+    steam.succeed("test \"$(stat -c %a ${irohProxy.stateDirectory}/ticket)\" = 600")
 
     phone.wait_for_unit("multi-user.target")
     phone.succeed("${lib.getExe steamlessPhoneClient} > ${phoneClientConfig.logPath} 2>&1 &")

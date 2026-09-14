@@ -27,6 +27,7 @@ import android.widget.TextView
 import android.widget.Toast
 import rikka.shizuku.Shizuku
 import xyz.reo101.steamlesslink.bridge.ControllerBridgeService
+import xyz.reo101.steamlesslink.raw.fetchIrohTicket
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
 
 class MainActivity : Activity() {
@@ -38,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var keyInput: EditText
     private lateinit var modeSpinner: Spinner
     private lateinit var transportSwitch: Switch
+    private var irohBootstrapInProgress = false
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val message = intent?.getStringExtra(ControllerBridgeService.EXTRA_STATUS) ?: return
@@ -151,6 +153,10 @@ class MainActivity : Activity() {
             setOnClickListener { stopService(Intent(this@MainActivity, ControllerBridgeService::class.java)) }
         })
         root.addView(buttonRow)
+        root.addView(Button(this).apply {
+            text = "Fetch Iroh ticket & Start"
+            setOnClickListener { fetchAndStartIroh() }
+        })
 
         root.addView(Button(this).apply {
             text = "Refresh controllers"
@@ -183,6 +189,14 @@ class MainActivity : Activity() {
         val port = intent.getIntExtra(ControllerBridgeService.EXTRA_PORT, defaultPort)
         val key = intent.getStringExtra(ControllerBridgeService.EXTRA_KEY).orEmpty()
         val irohTicket = intent.getStringExtra(ControllerBridgeService.EXTRA_IROH_TICKET).orEmpty()
+        if (mode == ControllerBridgeService.MODE_UHID_RAW_IROH && irohTicket.isBlank() && host.isNotBlank()) {
+            hostInput.setText(host)
+            portInput.setText(port.toString())
+            keyInput.setText(key)
+            transportSwitch.isChecked = transport == ControllerBridgeService.TRANSPORT_USB
+            fetchAndStartIroh(transport, key)
+            return
+        }
         startBridge(host, port, key, transport, mode, irohTicket)
     }
 
@@ -229,6 +243,7 @@ class MainActivity : Activity() {
             if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) putInt(PREF_PORT, port)
             putString(PREF_KEY, key)
             putString(PREF_MODE, mode)
+            putBoolean(PREF_TRANSPORT_USB, transport == ControllerBridgeService.TRANSPORT_USB)
         }.apply()
 
         val serviceIntent = Intent(this, ControllerBridgeService::class.java)
@@ -249,6 +264,35 @@ class MainActivity : Activity() {
             else -> "$host:$port"
         }
         appendStatus("Starting $transport/$mode bridge to $target...")
+    }
+
+    private fun fetchAndStartIroh(transport: String = selectedTransport(), key: String = keyInput.text.toString()) {
+        if (irohBootstrapInProgress) return
+        val host = sanitizeHost(hostInput.text.toString())
+        val port = portInput.text.toString().toIntOrNull() ?: DEFAULT_RAW_UHID_PORT
+        if (host.isBlank()) {
+            statusText.text = "Enter the raw TCP bridge host/IP first.\n\n${statusText.text}"
+            return
+        }
+        irohBootstrapInProgress = true
+        appendStatus("Fetching Iroh ticket from $host:$port...")
+        Thread({
+            runCatching { fetchIrohTicket(host, port) }
+                .onSuccess { ticket ->
+                    runOnUiThread {
+                        irohBootstrapInProgress = false
+                        irohTicketInput.setText(ticket)
+                        modeSpinner.setSelection(modeIndex(ControllerBridgeService.MODE_UHID_RAW_IROH))
+                        startBridge(host, port, key, transport, ControllerBridgeService.MODE_UHID_RAW_IROH, ticket)
+                    }
+                }
+                .onFailure { error ->
+                    runOnUiThread {
+                        irohBootstrapInProgress = false
+                        appendStatus("Could not fetch Iroh ticket: ${error.message ?: error::class.java.simpleName}")
+                    }
+                }
+        }, "iroh-ticket-bootstrap").start()
     }
 
     override fun onStart() {
@@ -330,9 +374,9 @@ class MainActivity : Activity() {
 
     private fun updateInputAvailability() {
         val mode = selectedMode()
-        val usesHostPort = mode == ControllerBridgeService.MODE_UHID_RAW || mode == ControllerBridgeService.MODE_VIIPER_XBOX360
-        setInputAvailability(hostInput, usesHostPort, "Bridge host/IP is used by Steamless Link and VIIPER Xbox")
-        setInputAvailability(portInput, usesHostPort, "Bridge port is used by Steamless Link and VIIPER Xbox")
+        val usesHostPort = mode == ControllerBridgeService.MODE_UHID_RAW || mode == ControllerBridgeService.MODE_UHID_RAW_IROH || mode == ControllerBridgeService.MODE_VIIPER_XBOX360
+        setInputAvailability(hostInput, usesHostPort, "Bridge host/IP is used by Steamless Link, Iroh bootstrap, and VIIPER Xbox")
+        setInputAvailability(portInput, usesHostPort, "Bridge port is used by Steamless Link, Iroh bootstrap, and VIIPER Xbox")
         setInputAvailability(irohTicketInput, mode == ControllerBridgeService.MODE_UHID_RAW_IROH, "Iroh ticket is used by Steamless Link Iroh")
         setInputAvailability(keyInput, mode == ControllerBridgeService.MODE_VIIPER_XBOX360, "VIIPER key is used by VIIPER Xbox")
     }
