@@ -297,13 +297,26 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           });
         };
 
-        devShells.default = pkgs.mkShell {
+        devShells.build = pkgs.mkShell {
           packages = with pkgs; [
             androidSdk
-            android-tools
             gradle
             jdk17
             zig
+          ];
+
+          env = {
+            ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
+            ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";
+            JAVA_HOME = pkgs.jdk17.home;
+            IROH_JNI = self'.packages.iroh-android-jni.outPath;
+            GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/35.0.0/aapt2";
+          };
+        };
+
+        devShells.default = self'.devShells.build.overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ (with pkgs; [
+            android-tools
             inputs'.zls.packages.default
             kotlin
             kotlin-language-server
@@ -313,13 +326,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             netcat-gnu
             openssl
             usbutils
-          ];
-
-          ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
-          ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";
-          JAVA_HOME = pkgs.jdk17.home;
-          IROH_JNI = self'.packages.iroh-android-jni.outPath;
-          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/35.0.0/aapt2";
+          ]);
 
           shellHook = ''
             echo "SteamlessLink Android/Kotlin dev shell"
@@ -327,7 +334,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             echo "  JAVA_HOME=$JAVA_HOME"
             echo "  IROH_JNI=$IROH_JNI"
           '';
-        };
+        });
       };
   }
 )

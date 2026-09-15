@@ -25,6 +25,10 @@ nix develop -c gradle :app:testDebugUnitTest
 nix develop -c gradle :app:installDebug
 ```
 
+CI uses `nix develop .#build -c gradle ...`, a build-only shell without
+language servers or developer diagnostics. The default shell extends it with
+those tools; both share the SDK, Zig, Gradle, and JNI configuration.
+
 The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
 `x86_64`. Both generic HID profiles and local Xbox mode report that they are unavailable
 when the native library cannot load; raw transport still works. Omit it only for a
