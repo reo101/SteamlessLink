@@ -310,7 +310,7 @@ class MainActivity : Activity() {
             appendLine("Tip: Steamless Link preserves the Valve HID device. Generic HID Gamepad creates a standard Linux gamepad on the Steamless Link host. Steamless Link Iroh uses an endpoint ticket instead of host:port.")
             appendLine("Extended Generic HID adds rear buttons, two touchpads and IIO motion sensors. Steam does not automatically associate these companions with the gamepad; an updated host is required.")
             appendLine("Local Xbox mode bundles a virtual Android gamepad helper; it needs Shizuku or su/root and /dev/uinput.")
-            appendLine("Raw USB currently forwards input only; Steam feature/output proxying is implemented for BLE.")
+            appendLine("Raw BLE and USB proxy Steam feature/output reports. USB forwards the wired controller identity and descriptor; grant USB access when prompted.")
         }
     }
 

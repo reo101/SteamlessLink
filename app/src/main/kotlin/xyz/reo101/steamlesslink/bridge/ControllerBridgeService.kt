@@ -140,7 +140,11 @@ class ControllerBridgeService : Service() {
             var raw: UhidRawClient? = null
             val extended = if (mode == MODE_UHID_EXTENDED_GAMEPAD) ExtendedGamepadSession() else null
             try {
-                val initialDeviceInfo = if (mode == MODE_UHID_GENERIC_GAMEPAD) genericGamepadDeviceInfo() else null
+                val initialDeviceInfo = when (mode) {
+                    MODE_UHID_GENERIC_GAMEPAD -> genericGamepadDeviceInfo()
+                    MODE_UHID_RAW, MODE_UHID_RAW_IROH -> (tritonTransport as? UsbTritonTransport)?.deviceInfo
+                    else -> null
+                }
                 raw = if (mode == MODE_UHID_RAW_IROH) {
                     status("Connecting to Steamless Link host over Iroh")
                     UhidRawClient(
@@ -216,6 +220,7 @@ class ControllerBridgeService : Service() {
             TRANSPORT_USB -> UsbTritonTransport(
                 context = this,
                 enableImu = mode == MODE_UHID_EXTENDED_GAMEPAD,
+                enableLizardModeRefresh = mode != MODE_UHID_RAW && mode != MODE_UHID_RAW_IROH,
                 onReport = ::handleTritonReport,
                 onStatus = ::status,
             ).also { it.start() }
@@ -243,6 +248,7 @@ class ControllerBridgeService : Service() {
         val transport = tritonTransport
         val report = when (transport) {
             is BleTritonTransport -> transport.readHidFeatureReport(reportNumber)
+            is UsbTritonTransport -> transport.readHidReport(reportNumber, reportType)
             is FakeTritonTransport -> transport.readHidFeatureReport(reportNumber)
             else -> {
                 status("UHID get-report id=$requestId unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
@@ -257,6 +263,7 @@ class ControllerBridgeService : Service() {
         val transport = tritonTransport
         val ok = when (transport) {
             is BleTritonTransport -> transport.enqueueHidOutputReport(data)
+            is UsbTritonTransport -> data.isNotEmpty() && transport.writeHidReport(data[0].toInt() and 0xff, reportType, data)
             is FakeTritonTransport -> transport.enqueueHidOutputReport(data)
             else -> {
                 status("UHID output-report unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
@@ -269,6 +276,11 @@ class ControllerBridgeService : Service() {
 
     private fun handleRawSetReport(requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray): Boolean {
         val transport = tritonTransport
+        if (transport is UsbTritonTransport) {
+            val ok = transport.writeHidReport(reportNumber, reportType, data)
+            if (!ok) status("USB HID write failed for UHID set-report id=$requestId rnum=$reportNumber rtype=$reportType len=${data.size}")
+            return ok
+        }
         val ok = when (transport) {
             is BleTritonTransport -> transport.writeHidFeatureReport(data)
             is FakeTritonTransport -> transport.writeHidFeatureReport(data)
@@ -369,15 +381,24 @@ class ControllerBridgeService : Service() {
     }
 
     private fun awaitCaptureReady(generation: Long): Boolean {
-        val ble = tritonTransport as? BleTritonTransport ?: return true
-        status("Waiting for BLE notifications before opening output stream")
-        val ready = ble.awaitReady(BLE_READY_TIMEOUT_MS)
+        val transport = tritonTransport
+        val label = when (transport) {
+            is BleTritonTransport -> "BLE notifications"
+            is UsbTritonTransport -> "USB reports"
+            else -> return true
+        }
+        status("Waiting for $label before opening output stream")
+        val ready = when (transport) {
+            is BleTritonTransport -> transport.awaitReady(BLE_READY_TIMEOUT_MS)
+            is UsbTritonTransport -> transport.awaitReady(USB_READY_TIMEOUT_MS)
+            else -> false
+        }
         if (!isCurrentBridge(generation)) return false
         if (!ready) {
-            status("BLE notifications were not ready; not opening output stream")
+            status("$label were not ready; not opening output stream")
             return false
         }
-        status("BLE capture ready")
+        status(if (transport is BleTritonTransport) "BLE capture ready" else "USB capture ready")
         return true
     }
 
@@ -509,6 +530,7 @@ class ControllerBridgeService : Service() {
         private const val REPORT_STATUS_INTERVAL_MS = 1000L
         private const val DROPPED_STATUS_INTERVAL_MS = 5000L
         private const val BLE_READY_TIMEOUT_MS = 12_000L
+        private const val USB_READY_TIMEOUT_MS = 30_000L
         private const val RAW_CONNECTION_WAIT_MS = 500L
         private const val RAW_RECONNECT_DELAY_MS = 2_000L
         private val DIAGNOSTIC_NOTIFICATION_PREFIXES = listOf(

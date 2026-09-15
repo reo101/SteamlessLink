@@ -13,8 +13,10 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
 import java.io.Closeable
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import xyz.reo101.steamlesslink.protocol.ExtendedGamepadProtocol
+import xyz.reo101.steamlesslink.protocol.RawProtocol
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,20 +26,28 @@ class UsbTritonTransport(
     private val onReport: (ByteArray, Int) -> Unit,
     private val onStatus: (String) -> Unit,
     private val enableImu: Boolean = false,
+    private val enableLizardModeRefresh: Boolean = true,
 ) : Closeable {
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val running = AtomicBoolean(false)
+    private val readyLatch = CountDownLatch(1)
+    private val reportIoLock = Object()
+    @Volatile private var ready = false
+    @Volatile internal var deviceInfo: ByteArray? = null
+        private set
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "usb-triton-reader") }
     private var lizardExecutor: ScheduledExecutorService? = null
     private var connection: UsbDeviceConnection? = null
     private var claimedInterface: UsbInterface? = null
     private var inputEndpoint: UsbEndpoint? = null
+    private var outputEndpoint: UsbEndpoint? = null
     private var permissionReceiver: BroadcastReceiver? = null
 
     fun start() {
         val device = findCandidateDevice()
         if (device == null) {
             onStatus("No supported Steam Controller USB device found")
+            readyLatch.countDown()
             return
         }
 
@@ -57,6 +67,7 @@ class UsbTritonTransport(
     private fun requestPermission(device: UsbDevice) {
         onStatus("Requesting USB permission for ${device.deviceName}")
         val action = "${context.packageName}.USB_PERMISSION"
+        unregisterPermissionReceiver()
         permissionReceiver = object : BroadcastReceiver() {
             override fun onReceive(receiverContext: Context, intent: Intent) {
                 if (intent.action != action) return
@@ -73,10 +84,10 @@ class UsbTritonTransport(
                     open(permittedDevice)
                 } else {
                     onStatus("USB permission denied or unsupported device")
+                    readyLatch.countDown()
                 }
             }
         }
-        unregisterPermissionReceiver()
         val filter = IntentFilter(action)
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -94,6 +105,7 @@ class UsbTritonTransport(
         val openedConnection = usbManager.openDevice(device)
         if (openedConnection == null) {
             onStatus("Failed to open ${device.deviceName}")
+            readyLatch.countDown()
             return
         }
 
@@ -101,6 +113,7 @@ class UsbTritonTransport(
         if (ifaceAndEndpoint == null) {
             openedConnection.close()
             onStatus("No HID input endpoint on ${device.deviceName}")
+            readyLatch.countDown()
             return
         }
 
@@ -108,15 +121,40 @@ class UsbTritonTransport(
         if (!openedConnection.claimInterface(usbInterface, true)) {
             openedConnection.close()
             onStatus("Failed to claim HID interface ${usbInterface.id}")
+            readyLatch.countDown()
             return
         }
+
+        val descriptor = ByteArray(RawProtocol.MAX_REPORT_DESCRIPTOR_SIZE)
+        val descriptorLength = openedConnection.controlTransfer(
+            0x81, 0x06, 0x2200, usbInterface.id, // GET_DESCRIPTOR (HID report), interface recipient
+            descriptor, descriptor.size, 1000,
+        )
+        if (descriptorLength <= 0) {
+            openedConnection.releaseInterface(usbInterface)
+            openedConnection.close()
+            onStatus("Failed to read USB HID report descriptor ($descriptorLength)")
+            readyLatch.countDown()
+            return
+        }
+        deviceInfo = RawProtocol.encodeDeviceInfo(
+            bus = 3, // BUS_USB
+            vendor = device.vendorId,
+            product = device.productId,
+            descriptor = descriptor.copyOf(descriptorLength),
+            name = "Steam Controller",
+        )
 
         connection = openedConnection
         claimedInterface = usbInterface
         inputEndpoint = endpoint
+        outputEndpoint = (0 until usbInterface.endpointCount).map(usbInterface::getEndpoint).firstOrNull {
+            it.direction == UsbConstants.USB_DIR_OUT &&
+                (it.type == UsbConstants.USB_ENDPOINT_XFER_INT || it.type == UsbConstants.USB_ENDPOINT_XFER_BULK)
+        }
         running.set(true)
         onStatus("Opened ${device.deviceName} interface=${usbInterface.id} endpoint=${endpoint.endpointNumber}")
-        startLizardModeRefresh(openedConnection, usbInterface)
+        if (enableLizardModeRefresh) startLizardModeRefresh(openedConnection, usbInterface)
         startReadLoop(openedConnection, endpoint)
     }
 
@@ -143,10 +181,14 @@ class UsbTritonTransport(
             while (running.get()) {
                 val read = openedConnection.bulkTransfer(endpoint, buffer, buffer.size, 1000)
                 if (read > 0) {
+                    ready = true
+                    readyLatch.countDown()
                     onReport(buffer.copyOf(read), read)
                 } else if (read < 0) {
-                    onStatus("USB read failed ($read); stopping")
+                    if (running.get()) onStatus("USB read failed ($read); stopping")
                     running.set(false)
+                    ready = false
+                    readyLatch.countDown()
                 }
             }
         }
@@ -161,7 +203,7 @@ class UsbTritonTransport(
         }, 0, 3, TimeUnit.SECONDS)
     }
 
-    private fun disableLizardMode(openedConnection: UsbDeviceConnection, interfaceId: Int): Boolean {
+    private fun disableLizardMode(openedConnection: UsbDeviceConnection, interfaceId: Int): Boolean = synchronized(reportIoLock) {
         val report = if (enableImu) ExtendedGamepadProtocol.EXTENDED_USB_SETTINGS else ByteArray(64).also {
             it[0] = 0x01 // feature report id
             it[1] = 0x87.toByte() // ID_SET_SETTINGS_VALUES
@@ -178,11 +220,46 @@ class UsbTritonTransport(
             report.size,
             1000,
         )
-        return sent == report.size
+        sent == report.size
+    }
+
+    fun awaitReady(timeoutMs: Long): Boolean {
+        readyLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        return ready && running.get()
+    }
+
+    fun readHidReport(reportNumber: Int, reportType: Int): ByteArray? = synchronized(reportIoLock) {
+        val value = hidReportValue(reportNumber, reportType) ?: return@synchronized null
+        val conn = connection ?: return@synchronized null
+        val iface = claimedInterface ?: return@synchronized null
+        // Include the report ID. Return the actual USB length, not the buffer capacity.
+        val report = ByteArray(65)
+        val read = conn.controlTransfer(0xa1, 0x01, value, iface.id, report, report.size, 1000)
+        if (read > 0) report.copyOf(read) else null
+    }
+
+    fun writeHidReport(reportNumber: Int, reportType: Int, report: ByteArray): Boolean = synchronized(reportIoLock) {
+        val value = hidReportValue(reportNumber, reportType) ?: return@synchronized false
+        if (reportType == 2 || report.isEmpty() || report.size > 65 ||
+            (report[0].toInt() and 0xff) != reportNumber
+        ) return@synchronized false
+        val conn = connection ?: return@synchronized false
+        val iface = claimedInterface ?: return@synchronized false
+        // Unlike BLE, USB carries the report ID and padding in the transfer itself.
+        // Triton accepts output on interrupt OUT, not control SET_REPORT.
+        val endpoint = outputEndpoint
+        val sent = if (reportType == 1 && endpoint != null) {
+            conn.bulkTransfer(endpoint, report, report.size, 1000)
+        } else {
+            conn.controlTransfer(0x21, 0x09, value, iface.id, report, report.size, 1000)
+        }
+        sent == report.size
     }
 
     override fun close() {
         running.set(false)
+        ready = false
+        readyLatch.countDown()
         lizardExecutor?.shutdownNow()
         executor.shutdownNow()
         unregisterPermissionReceiver()
@@ -196,7 +273,7 @@ class UsbTritonTransport(
         permissionReceiver = null
     }
 
-    private fun closeConnectionOnly() {
+    private fun closeConnectionOnly() = synchronized(reportIoLock) {
         val iface = claimedInterface
         val conn = connection
         if (iface != null && conn != null) {
@@ -206,12 +283,26 @@ class UsbTritonTransport(
         claimedInterface = null
         connection = null
         inputEndpoint = null
+        outputEndpoint = null
+        deviceInfo = null
     }
 
     companion object {
         const val VALVE_VENDOR_ID = 0x28de
         const val TRITON_USB_PRODUCT_ID = 0x1302
         const val TRITON_BLE_PRODUCT_ID = 0x1303
+
+        internal fun hidReportValue(reportNumber: Int, reportType: Int): Int? {
+            if (reportNumber !in 0..0xff) return null
+            // UHID: feature/output/input = 0/1/2; USB HID: input/output/feature = 1/2/3.
+            val usbType = when (reportType) {
+                0 -> 3
+                1 -> 2
+                2 -> 1
+                else -> return null
+            }
+            return (usbType shl 8) or reportNumber
+        }
 
         fun isSteamController(device: UsbDevice): Boolean =
             isSteamController(device.vendorId, device.productId)

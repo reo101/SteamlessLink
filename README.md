@@ -119,7 +119,25 @@ The main UI has a BLE/USB transport toggle, a connection method dropdown, and St
 - `Extended Generic HID` - gamepad with rear buttons, two independent absolute touchpads, and standards-based gyro/accelerometer sensors over TCP
 - `Local Xbox (Shizuku/root)` — local Android virtual Xbox 360 gamepad via `/dev/uinput`
 
-USB is experimental/input-only; avoid it if the phone/controller USB setup is unstable.
+USB requires Android's USB-device permission. Raw TCP and Iroh modes forward the
+wired controller's actual identity and HID descriptor, input reports, feature
+GET/SET requests, and interrupt output reports. Steam owns controller settings in
+raw modes; mapped modes refresh lizard-mode suppression locally. The bridge waits
+for USB input before opening the remote stream. After unplugging/reconnecting the
+controller, tap Start again.
+
+The opt-in USB instrumentation tests require a wired controller with permission
+already granted. Stop the bridge, install both debug APKs, then run:
+
+```sh
+adb shell am instrument -w -r -e usbHardware true \
+  -e class xyz.reo101.steamlesslink.usb.UsbTritonTransportInstrumentationTest \
+  xyz.reo101.steamlesslink.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+These tests cover permission-receiver lifecycle, real USB input and identity,
+a controller-info feature query/reply, and zero-rumble interrupt output. They are
+skipped in normal emulator runs.
 
 ### Extended Generic HID
 
