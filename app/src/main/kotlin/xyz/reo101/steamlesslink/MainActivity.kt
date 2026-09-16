@@ -145,6 +145,10 @@ class MainActivity : Activity() {
         })
         root.addView(buttonRow)
         root.addView(Button(this).apply {
+            text = "Testing ground"
+            setOnClickListener { startActivity(Intent(this@MainActivity, xyz.reo101.steamlesslink.testing.ControllerTestActivity::class.java)) }
+        })
+        root.addView(Button(this).apply {
             text = "Fetch Iroh ticket & Start"
             setOnClickListener { fetchAndStartIroh() }
         })

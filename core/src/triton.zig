@@ -4,6 +4,7 @@ pub const Error = error{
     ReportTooShort,
     UnsupportedReport,
     OutputBufferTooSmall,
+    InvalidMappingOptions,
 };
 
 pub const REPORT_ID_USB_STATE = 0x42;
@@ -87,6 +88,49 @@ pub fn mapTritonToXbox360(report: []const u8, out_packet: []u8) Error!void {
     putI16Le(out_packet, 10, state.right_stick_x);
     putI16Le(out_packet, 12, state.right_stick_y);
     @memset(out_packet[14..XBOX360_PACKET_SIZE], 0);
+}
+
+pub const LocalOptions = struct {
+    // L4, L5, R4, R5. Zero leaves the grip unbound.
+    grips: [4]u32 = .{ 0, 0, 0, 0 },
+    right_pad_stick: bool = false,
+    touch_gyro: bool = false,
+    gyro_full_scale_dps: u32 = 180,
+};
+
+pub fn mapTritonToLocalXbox360(report: []const u8, out: []u8, options: LocalOptions) Error!void {
+    const valid_buttons: u32 = 0xf7ff;
+    for (options.grips) |mask| {
+        if (mask & ~valid_buttons != 0) return error.InvalidMappingOptions;
+    }
+    if (options.gyro_full_scale_dps < 30 or options.gyro_full_scale_dps > 720) return error.InvalidMappingOptions;
+    try mapTritonToXbox360(report, out);
+    const state = try parse(report);
+    var buttons = u32Le(out, 0);
+    for ([_]u32{ 0x20000, 0x40000, 0x80, 0x100 }, options.grips) |grip, mapped| {
+        if (has(state.buttons, grip)) buttons |= mapped;
+    }
+    putU32Le(out, 0, buttons);
+    var x: i32 = state.right_stick_x;
+    var y: i32 = state.right_stick_y;
+    const touching = has(state.buttons, 0x200000);
+    if (options.right_pad_stick and touching) {
+        if (state.pads) |pads| {
+            x = pads[1].x;
+            y = pads[1].y;
+        }
+    }
+    if (options.touch_gyro and touching) {
+        if (state.imu) |imu| {
+            // Triton gyro: +/-2000 degrees/s. Device-local yaw (-Y) and
+            // pitch (X), not orientation integration; release touch to clutch.
+            const scale: i32 = @intCast(options.gyro_full_scale_dps);
+            x += @divTrunc(-@as(i32, imu.gyro[1]) * 2000, scale);
+            y += @divTrunc(@as(i32, imu.gyro[0]) * 2000, scale);
+        }
+    }
+    putI16Le(out, 10, @intCast(std.math.clamp(x, -32768, 32767)));
+    putI16Le(out, 12, @intCast(std.math.clamp(y, -32768, 32767)));
 }
 
 pub fn parse(report: []const u8) Error!State {

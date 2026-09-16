@@ -33,6 +33,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".testing.ControllerTestActivity"
+            android:exported="false" />
+
         <service
             android:name=".bridge.ControllerBridgeService"
             android:exported="false"

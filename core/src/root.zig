@@ -6,5 +6,6 @@ pub const protocol = @import("protocol.zig");
 pub const triton = @import("triton.zig");
 
 test {
+    _ = @import("local_mapping_test.zig");
     @import("std").testing.refAllDecls(@This());
 }

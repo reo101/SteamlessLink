@@ -1,5 +1,7 @@
 package xyz.reo101.steamlesslink.protocol
 
+import xyz.reo101.steamlesslink.local.LocalMappingSettings
+
 internal object NativeProtocol {
     val loadError: Throwable? = runCatching {
         System.loadLibrary("steamless_protocol")
@@ -57,6 +59,22 @@ internal object NativeProtocol {
             false
         }
     }
+
+    fun tryMapTritonToLocalXbox360(report: ByteArray, length: Int, outPacket: ByteArray, settings: LocalMappingSettings): Boolean {
+        if (!isAvailable) return false
+        return try {
+            nativeMapTritonToLocalXbox360(report, length, outPacket, settings.l4, settings.l5, settings.r4, settings.r5,
+                settings.rightPadStick, settings.touchGyro, settings.gyroFullScaleDps)
+        } catch (_: LinkageError) {
+            disabled = true
+            false
+        }
+    }
+
+    private external fun nativeMapTritonToLocalXbox360(
+        report: ByteArray, length: Int, outPacket: ByteArray,
+        l4: Int, l5: Int, r4: Int, r5: Int, rightPadStick: Boolean, touchGyro: Boolean, gyroFullScaleDps: Int,
+    ): Boolean
 
     private external fun nativeMapTritonToExtendedGamepad(report: ByteArray, length: Int, outPacket: ByteArray): Boolean
 

@@ -74,6 +74,43 @@ export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonT
     return JNI_TRUE;
 }
 
+export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToLocalXbox360(
+    env: *JNIEnv,
+    thiz: jobject,
+    report_array: jbyteArray,
+    requested_length: jint,
+    out_packet_array: jbyteArray,
+    l4: jint,
+    l5: jint,
+    r4: jint,
+    r5: jint,
+    right_pad_stick: jboolean,
+    touch_gyro: jboolean,
+    gyro_full_scale_dps: jint,
+) jboolean {
+    _ = thiz;
+    const options = triton.LocalOptions{
+        .grips = .{ @bitCast(l4), @bitCast(l5), @bitCast(r4), @bitCast(r5) },
+        .right_pad_stick = right_pad_stick != 0,
+        .touch_gyro = touch_gyro != 0,
+        .gyro_full_scale_dps = @bitCast(gyro_full_scale_dps),
+    };
+    mapLocal(env, report_array, requested_length, out_packet_array, options) catch |err| {
+        throwZigError(env, err);
+        return JNI_FALSE;
+    };
+    return JNI_TRUE;
+}
+
+fn mapLocal(env: *JNIEnv, report_array: jbyteArray, length: jint, out: jbyteArray, options: triton.LocalOptions) !void {
+    if (env.*.GetArrayLength(env, out) < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
+    var report: [MAX_TRITON_REPORT_BYTES]u8 = undefined;
+    const bytes = try readTritonReport(env, report_array, length, &report);
+    var packet: [triton.XBOX360_PACKET_SIZE]u8 = undefined;
+    try triton.mapTritonToLocalXbox360(bytes, &packet, options);
+    env.*.SetByteArrayRegion(env, out, 0, packet.len, @ptrCast(&packet));
+}
+
 fn mapTritonToXbox360(
     env: *JNIEnv,
     report_array: jbyteArray,
@@ -171,6 +208,7 @@ fn throwZigError(env: *JNIEnv, err: anyerror) void {
         error.ReportTooShort,
         error.UnsupportedReport,
         error.InvalidLength,
+        error.InvalidMappingOptions,
         => throwNew(env, "java/lang/IllegalArgumentException", @errorName(err)),
 
         error.OutputBufferTooSmall,

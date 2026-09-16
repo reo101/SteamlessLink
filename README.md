@@ -139,6 +139,58 @@ These tests cover permission-receiver lifecycle, real USB input and identity,
 a controller-info feature query/reply, and zero-rumble interrupt output. They are
 skipped in normal emulator runs.
 
+### Controller testing ground
+
+Open **Testing ground** from the main screen. It observes the active BLE/USB
+bridge without changing its output mode. Four pages separate:
+
+- **Captured input:** normalized Triton state reports, raw bytes, sticks,
+  triggers, pad coordinates/pressure, raw IMU fields, and a latched button mask.
+  BLE report IDs are reconstructed by the transport; these are not radio packets.
+- **Translated / outgoing:** the actual report sample offered to the active
+  output, plus independent default Xbox, saved local Xbox, generic HID, and
+  extended HID previews. Queue acceptance is not remote delivery. Extended
+  previews include sensors even when host controls suppress actual streaming.
+- **Android receipt:** gamepad key/motion events actually delivered to this
+  foreground activity, with device identity, held buttons and recent key history.
+  Enumerated devices alone do not prove input delivery. Test gamepad buttons are
+  consumed so they do not operate the UI; use the on-screen Back button to leave.
+- **Local mapping profile:** bind L4/L5/R4/R5 to standard Xbox buttons, map the
+  touched right pad to the right stick, and add right-pad-touch-activated gyro
+  yaw/pitch to that stick. Gyro sensitivity is the angular speed for full stick
+  deflection (30-720 degrees/s). Defaults preserve the original Xbox mapping.
+
+**Capture BLE/USB** explicitly replaces the current bridge with capture-only
+mode: no server, Shizuku, or virtual gamepad required. This mode enables IMU
+reports for previews. Observing an existing raw bridge does not enable IMU or
+change controller settings. Save the local profile and restart local output to
+apply it; remote raw/basic/extended outputs ignore these settings.
+
+Samples refresh at most 10 Hz while the tester is resumed. **Freeze sample**
+freezes only capture/output previews, not the bridge or Android event collection.
+**Clear** resets the display/latches. No recording is saved to disk. Sample age
+indicates stale input. Only recognized Triton state reports are displayed.
+
+The local mapper is a prototype: device-local angular velocity, no gyro bias
+calibration or orientation fusion, no mouse/trackball output, no native sensor
+passthrough, and no rumble. The virtual Xbox device retains its existing roughly
+12.5% stick flat zone. Gyro contribution is added to the physical/pad stick and
+clamped. Pad mapping disengages on touch release.
+
+Run the instrumentation suite with the phone unlocked. It tests fake capture,
+raw/generic/extended TCP output against a loopback receiver, and native mapping.
+To also verify a synthetic mapped rear-button press/release through the real
+local helper and Android's input framework, opt in with authorized Shizuku/root:
+
+```sh
+adb shell am instrument -w -r -e localHardware true \
+  xyz.reo101.steamlesslink.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Instrumentation stops the running bridge and closes the app when it finishes.
+Restart your desired bridge afterward. USB hardware tests remain a separate
+`usbHardware` opt-in.
+
 ### Extended Generic HID
 
 This is a separate standards-first profile, not Sony/Xbox emulation. It requires
