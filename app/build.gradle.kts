@@ -4,6 +4,7 @@ plugins {
 }
 
 val zigJniLibsDir = layout.buildDirectory.dir("generated/zig/jniLibs")
+val zigVersion = providers.exec { commandLine("zig", "version") }.standardOutput.asText.map(String::trim)
 val uinputHelperAssetsDir = layout.buildDirectory.dir("generated/uinput/assets")
 val irohJniLibsDir = providers.gradleProperty("steamless.irohJniLibs")
     .orElse(providers.environmentVariable("STEAMLESS_IROH_JNI_LIBS"))
@@ -101,36 +102,27 @@ val generateProtocolConstants = tasks.register<Exec>("generateProtocolConstants"
 }
 
 val zigNativeTasks = zigAndroidTargets.map { (abi, target) ->
-    val taskName = "buildZig" + abi
-        .split('-', '_')
+    val targetName = abi.split('-', '_')
         .joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) }
-    val outputFile = zigJniLibsDir.map { it.file("$abi/libsteamless_protocol.so") }
+    val outputDir = zigJniLibsDir.map { it.dir(abi) }
+    val outputFile = outputDir.map { it.file("libsteamless_protocol.so") }
 
-    tasks.register<Exec>(taskName) {
-        inputs.files(zigSources, zigCoreSources)
+    tasks.register<Exec>("buildZig$targetName") {
+        inputs.files(zigSources, zigCoreSources, rootProject.files(
+            "native/build.zig", "native/build.zig.zon", "core/build.zig", "core/build.zig.zon",
+        ))
+        inputs.property("zigVersion", zigVersion)
         inputs.property("zigTarget", target)
         inputs.property("zigOptimize", "ReleaseSafe")
         inputs.property("zigStrip", true)
         outputs.file(outputFile)
-
-        doFirst {
-            outputFile.get().asFile.parentFile.mkdirs()
-        }
-
+        workingDir(rootProject.file("native"))
         commandLine(
-            "zig",
-            "build-lib",
-            "-dynamic",
-            "-target",
-            target,
-            "-O",
-            "ReleaseSafe",
-            "-fstrip",
-            "-femit-bin=${outputFile.get().asFile.absolutePath}",
-            "--dep",
-            "steamless-core",
-            "-Mroot=${rootProject.file("native/src/jni.zig").absolutePath}",
-            "-Msteamless-core=${zigCoreRoot.absolutePath}",
+            "zig", "build",
+            "-Dtarget=$target", "-Doptimize=ReleaseSafe", "-Dstrip=true",
+            "--prefix", outputDir.get().asFile.absolutePath,
+            "--prefix-lib-dir", ".",
+            "--cache-dir", layout.buildDirectory.dir("generated/zig/cache/$abi").get().asFile.absolutePath,
         )
     }
 }

@@ -10,6 +10,24 @@ import org.junit.Test
 
 class NativeProtocolInstrumentationTest {
     @Test
+    fun jniBindingsPreserveArrayBoundsAndJavaExceptionTypes() {
+        assertTrue(NativeProtocol.isAvailable)
+        val report = ByteArray(18).apply { this[0] = 0x45 }
+        val packet = ByteArray(Xbox360Protocol.PACKET_SIZE)
+        assertThrows(IllegalArgumentException::class.java) {
+            NativeProtocol.tryMapTritonToXbox360(report, -1, packet)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NativeProtocol.tryMapTritonToXbox360(report, report.size + 1, packet)
+        }
+        assertThrows(IndexOutOfBoundsException::class.java) {
+            NativeProtocol.tryMapTritonToXbox360(report, report.size, ByteArray(packet.size - 1))
+        }
+        assertTrue(NativeProtocol.tryMapTritonToXbox360(report, report.size, packet))
+        assertArrayEquals(ByteArray(packet.size), packet)
+    }
+
+    @Test
     fun mapsTritonReportToTheBundledXbox360Packet() {
         val report = ByteArray(18)
         report[0] = 0x45

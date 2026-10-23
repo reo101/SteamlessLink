@@ -13,34 +13,17 @@ const extended_gamepad = @import("steamless-core").extended_gamepad;
 const generic_gamepad = @import("steamless-core").generic_gamepad;
 const triton = @import("steamless-core").triton;
 
-const jint = i32;
-const jsize = i32;
-const jbyte = i8;
-const jboolean = u8;
-const jobject = ?*anyopaque;
-const jclass = jobject;
-const jarray = jobject;
-const jbyteArray = jarray;
+// Generated per target from Android's official jni.h, without linking libc.
+const jni = @import("jni-bindings");
+const jint = jni.jint;
+const jboolean = jni.jboolean;
+const jobject = jni.jobject;
+const jbyteArray = jni.jbyteArray;
+const JNIEnv = jni.JNIEnv;
 
-const JNI_FALSE: jboolean = 0;
-const JNI_TRUE: jboolean = 1;
+const JNI_FALSE: jboolean = jni.JNI_FALSE;
+const JNI_TRUE: jboolean = jni.JNI_TRUE;
 const MAX_TRITON_REPORT_BYTES = 64;
-
-// Minimal C JNI table prefix. Zig can call JNI directly through this stable
-// ABI without importing `jni.h` or depending on Android libc headers.
-const JNINativeInterface = extern struct {
-    skip0: [6]?*const anyopaque,
-    FindClass: *const fn (env: *JNIEnv, name: [*:0]const u8) callconv(.c) jclass,
-    skip1: [7]?*const anyopaque,
-    ThrowNew: *const fn (env: *JNIEnv, clazz: jclass, msg: [*:0]const u8) callconv(.c) jint,
-    skip2: [156]?*const anyopaque,
-    GetArrayLength: *const fn (env: *JNIEnv, array: jarray) callconv(.c) jsize,
-    skip3: [28]?*const anyopaque,
-    GetByteArrayRegion: *const fn (env: *JNIEnv, array: jbyteArray, start: jsize, len: jsize, buf: [*]jbyte) callconv(.c) void,
-    skip4: [7]?*const anyopaque,
-    SetByteArrayRegion: *const fn (env: *JNIEnv, array: jbyteArray, start: jsize, len: jsize, buf: [*]const jbyte) callconv(.c) void,
-};
-const JNIEnv = *const JNINativeInterface;
 
 comptime {
     for (@typeInfo(NativeProtocol).@"struct".decl_names) |method_name| {
@@ -129,12 +112,12 @@ const NativeProtocol = struct {
 };
 
 fn mapLocal(env: *JNIEnv, report_array: jbyteArray, length: jint, out: jbyteArray, options: triton.LocalOptions) !void {
-    if (env.*.GetArrayLength(env, out) < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
+    if (env.*[0].GetArrayLength.?(env, out) < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
     var report: [MAX_TRITON_REPORT_BYTES]u8 = undefined;
     const bytes = try readTritonReport(env, report_array, length, &report);
     var packet: [triton.XBOX360_PACKET_SIZE]u8 = undefined;
     try triton.mapTritonToLocalXbox360(bytes, &packet, options);
-    env.*.SetByteArrayRegion(env, out, 0, packet.len, @ptrCast(&packet));
+    env.*[0].SetByteArrayRegion.?(env, out, 0, packet.len, @ptrCast(&packet));
 }
 
 fn mapTritonToXbox360(
@@ -143,14 +126,14 @@ fn mapTritonToXbox360(
     requested_length: jint,
     out_packet_array: jbyteArray,
 ) !void {
-    const out_array_len = env.*.GetArrayLength(env, out_packet_array);
+    const out_array_len = env.*[0].GetArrayLength.?(env, out_packet_array);
     if (out_array_len < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
 
     var report: [MAX_TRITON_REPORT_BYTES]u8 = @splat(0);
     const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
     var packet: [triton.XBOX360_PACKET_SIZE]u8 = @splat(0);
     try triton.mapTritonToXbox360(report_bytes, &packet);
-    env.*.SetByteArrayRegion(
+    env.*[0].SetByteArrayRegion.?(
         env,
         out_packet_array,
         0,
@@ -165,14 +148,14 @@ fn mapTritonToGenericGamepad(
     requested_length: jint,
     out_packet_array: jbyteArray,
 ) !void {
-    const out_array_len = env.*.GetArrayLength(env, out_packet_array);
+    const out_array_len = env.*[0].GetArrayLength.?(env, out_packet_array);
     if (out_array_len < generic_gamepad.INPUT_REPORT_SIZE) return error.OutputBufferTooSmall;
 
     var report: [MAX_TRITON_REPORT_BYTES]u8 = @splat(0);
     const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
     var packet: [generic_gamepad.INPUT_REPORT_SIZE]u8 = @splat(0);
     try generic_gamepad.mapTritonToInput(report_bytes, &packet);
-    env.*.SetByteArrayRegion(
+    env.*[0].SetByteArrayRegion.?(
         env,
         out_packet_array,
         0,
@@ -182,12 +165,12 @@ fn mapTritonToGenericGamepad(
 }
 
 fn mapTritonToExtendedGamepad(env: *JNIEnv, report_array: jbyteArray, requested_length: jint, out_packet_array: jbyteArray) !void {
-    if (env.*.GetArrayLength(env, out_packet_array) < extended_gamepad.PACKET_SIZE) return error.OutputBufferTooSmall;
+    if (env.*[0].GetArrayLength.?(env, out_packet_array) < extended_gamepad.PACKET_SIZE) return error.OutputBufferTooSmall;
     var report: [MAX_TRITON_REPORT_BYTES]u8 = undefined;
     const bytes = try readTritonReport(env, report_array, requested_length, &report);
     var packet: [extended_gamepad.PACKET_SIZE]u8 = undefined;
     try extended_gamepad.mapTritonToInput(bytes, &packet);
-    env.*.SetByteArrayRegion(env, out_packet_array, 0, extended_gamepad.PACKET_SIZE, @ptrCast(&packet));
+    env.*[0].SetByteArrayRegion.?(env, out_packet_array, 0, extended_gamepad.PACKET_SIZE, @ptrCast(&packet));
 }
 
 fn readTritonReport(
@@ -197,13 +180,13 @@ fn readTritonReport(
     out: *[MAX_TRITON_REPORT_BYTES]u8,
 ) ![]const u8 {
     if (requested_length < 0) return error.InvalidLength;
-    const report_array_len = env.*.GetArrayLength(env, report_array);
+    const report_array_len = env.*[0].GetArrayLength.?(env, report_array);
     if (requested_length > report_array_len) return error.InvalidLength;
 
     const requested_len: usize = @intCast(requested_length);
     const copy_len = @min(requested_len, MAX_TRITON_REPORT_BYTES);
     if (copy_len > 0) {
-        env.*.GetByteArrayRegion(
+        env.*[0].GetByteArrayRegion.?(
             env,
             report_array,
             0,
@@ -230,7 +213,7 @@ fn throwZigError(env: *JNIEnv, err: anyerror) void {
 }
 
 fn throwNew(env: *JNIEnv, class_name: [*:0]const u8, message: [*:0]const u8) void {
-    const cls = env.*.FindClass(env, class_name);
+    const cls = env.*[0].FindClass.?(env, class_name);
     if (cls == null) return;
-    _ = env.*.ThrowNew(env, cls, message);
+    _ = env.*[0].ThrowNew.?(env, cls, message);
 }

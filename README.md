@@ -33,6 +33,25 @@ default shell. The Iroh proxy uses Rust Iroh 1.4.1. Android uses Kotlin/FFI
 1.2.0, whose native dependency is also Iroh 1.4.1. The Android initializer is
 vendored from that release. Nix still builds both native Android libraries.
 
+`native/build.zig` builds the JNI library and generates its types and function
+table per target. `native/build.zig.zon` pins AOSP `libnativehelper`
+(Android 15.0.0_r1) and Codeberg's `ziglang/translate-c` 2.0.2 by revision and
+content hash. Zig fetches these dependencies into `native/zig-pkg/`. The
+`translate-c` package runs on the build host and translates `include_jni/jni.h`
+for the selected Android target. It does not build `libnativehelper` or link
+libc into the JNI library. No NDK installation is required.
+
+Gradle invokes `zig build` for each Android ABI. To build the JNI library alone:
+
+```sh
+cd native
+zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseSafe -Dstrip=true
+```
+
+The library is installed to `native/zig-out/lib/libsteamless_protocol.so`.
+If the dependencies are already fetched, use `--system zig-pkg` to disable network
+fetching. Sandboxed Nix builds must receive a prefetched package directory.
+
 The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
 `x86_64`. Both generic HID profiles and local Xbox mode report that they are unavailable
 when the native library cannot load; raw transport still works. Omit it only for a

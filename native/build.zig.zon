@@ -1,0 +1,24 @@
+.{
+    .name = .steamless_protocol,
+    .version = "0.1.0",
+    .fingerprint = 0x8ebcc165171688ae,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .steamless_core = .{
+            .path = "../core",
+        },
+        .android_jni = .{
+            .url = "https://android.googlesource.com/platform/libnativehelper/+archive/3ca43dfe2bf4613852df0303531fa8ecf4b7063c.tar.gz",
+            .hash = "N-V-__8AADCABQCvQ3BvOuZZyJzv7E6Ia6ZQ9XZOhaKjPUai",
+        },
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c?ref=2.0.2#c11030012dc325d446474d17b78c242fd1d622ec",
+            .hash = "translate_c-2.0.2-Q_BUWvBNBwBgPKQJPblip6M7AHNK_IPNPmyv4rSIQMQc",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
