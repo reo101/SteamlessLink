@@ -42,65 +42,91 @@ const JNINativeInterface = extern struct {
 };
 const JNIEnv = *const JNINativeInterface;
 
-export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToXbox360(
-    env: *JNIEnv,
-    thiz: jobject,
-    report_array: jbyteArray,
-    requested_length: jint,
-    out_packet_array: jbyteArray,
-) jboolean {
-    _ = thiz;
-
-    mapTritonToXbox360(env, report_array, requested_length, out_packet_array) catch |err| {
-        throwZigError(env, err);
-        return JNI_FALSE;
-    };
-    return JNI_TRUE;
+comptime {
+    for (@typeInfo(NativeProtocol).@"struct".decl_names) |method_name| {
+        @export(&@field(NativeProtocol, method_name), .{
+            .name = "Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_" ++ method_name,
+        });
+    }
 }
 
-export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToGenericGamepad(
-    env: *JNIEnv,
-    thiz: jobject,
-    report_array: jbyteArray,
-    requested_length: jint,
-    out_packet_array: jbyteArray,
-) jboolean {
-    _ = thiz;
+// Only JNI entry points belong in this namespace; names match the Kotlin methods.
+const NativeProtocol = struct {
+    pub fn nativeMapTritonToXbox360(
+        env: *JNIEnv,
+        thiz: jobject,
+        report_array: jbyteArray,
+        requested_length: jint,
+        out_packet_array: jbyteArray,
+    ) callconv(.c) jboolean {
+        _ = thiz;
 
-    mapTritonToGenericGamepad(env, report_array, requested_length, out_packet_array) catch |err| {
-        throwZigError(env, err);
-        return JNI_FALSE;
-    };
-    return JNI_TRUE;
-}
+        mapTritonToXbox360(env, report_array, requested_length, out_packet_array) catch |err| {
+            throwZigError(env, err);
+            return JNI_FALSE;
+        };
+        return JNI_TRUE;
+    }
 
-export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToLocalXbox360(
-    env: *JNIEnv,
-    thiz: jobject,
-    report_array: jbyteArray,
-    requested_length: jint,
-    out_packet_array: jbyteArray,
-    l4: jint,
-    l5: jint,
-    r4: jint,
-    r5: jint,
-    right_pad_stick: jboolean,
-    touch_gyro: jboolean,
-    gyro_full_scale_dps: jint,
-) jboolean {
-    _ = thiz;
-    const options = triton.LocalOptions{
-        .grips = .{ @bitCast(l4), @bitCast(l5), @bitCast(r4), @bitCast(r5) },
-        .right_pad_stick = right_pad_stick != 0,
-        .touch_gyro = touch_gyro != 0,
-        .gyro_full_scale_dps = @bitCast(gyro_full_scale_dps),
-    };
-    mapLocal(env, report_array, requested_length, out_packet_array, options) catch |err| {
-        throwZigError(env, err);
-        return JNI_FALSE;
-    };
-    return JNI_TRUE;
-}
+    pub fn nativeMapTritonToGenericGamepad(
+        env: *JNIEnv,
+        thiz: jobject,
+        report_array: jbyteArray,
+        requested_length: jint,
+        out_packet_array: jbyteArray,
+    ) callconv(.c) jboolean {
+        _ = thiz;
+
+        mapTritonToGenericGamepad(env, report_array, requested_length, out_packet_array) catch |err| {
+            throwZigError(env, err);
+            return JNI_FALSE;
+        };
+        return JNI_TRUE;
+    }
+
+    pub fn nativeMapTritonToLocalXbox360(
+        env: *JNIEnv,
+        thiz: jobject,
+        report_array: jbyteArray,
+        requested_length: jint,
+        out_packet_array: jbyteArray,
+        l4: jint,
+        l5: jint,
+        r4: jint,
+        r5: jint,
+        right_pad_stick: jboolean,
+        touch_gyro: jboolean,
+        gyro_full_scale_dps: jint,
+    ) callconv(.c) jboolean {
+        _ = thiz;
+        const options = triton.LocalOptions{
+            .grips = .{ @bitCast(l4), @bitCast(l5), @bitCast(r4), @bitCast(r5) },
+            .right_pad_stick = right_pad_stick != 0,
+            .touch_gyro = touch_gyro != 0,
+            .gyro_full_scale_dps = @bitCast(gyro_full_scale_dps),
+        };
+        mapLocal(env, report_array, requested_length, out_packet_array, options) catch |err| {
+            throwZigError(env, err);
+            return JNI_FALSE;
+        };
+        return JNI_TRUE;
+    }
+
+    pub fn nativeMapTritonToExtendedGamepad(
+        env: *JNIEnv,
+        thiz: jobject,
+        report_array: jbyteArray,
+        requested_length: jint,
+        out_packet_array: jbyteArray,
+    ) callconv(.c) jboolean {
+        _ = thiz;
+        mapTritonToExtendedGamepad(env, report_array, requested_length, out_packet_array) catch |err| {
+            throwZigError(env, err);
+            return JNI_FALSE;
+        };
+        return JNI_TRUE;
+    }
+};
 
 fn mapLocal(env: *JNIEnv, report_array: jbyteArray, length: jint, out: jbyteArray, options: triton.LocalOptions) !void {
     if (env.*.GetArrayLength(env, out) < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
@@ -153,21 +179,6 @@ fn mapTritonToGenericGamepad(
         generic_gamepad.INPUT_REPORT_SIZE,
         @ptrCast(&packet),
     );
-}
-
-export fn Java_xyz_reo101_steamlesslink_protocol_NativeProtocol_nativeMapTritonToExtendedGamepad(
-    env: *JNIEnv,
-    thiz: jobject,
-    report_array: jbyteArray,
-    requested_length: jint,
-    out_packet_array: jbyteArray,
-) jboolean {
-    _ = thiz;
-    mapTritonToExtendedGamepad(env, report_array, requested_length, out_packet_array) catch |err| {
-        throwZigError(env, err);
-        return JNI_FALSE;
-    };
-    return JNI_TRUE;
 }
 
 fn mapTritonToExtendedGamepad(env: *JNIEnv, report_array: jbyteArray, requested_length: jint, out_packet_array: jbyteArray) !void {
