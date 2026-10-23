@@ -13,7 +13,7 @@ fn axis(packet: []const u8, offset: usize) i16 {
 
 test "default local mapping is byte identical for all Triton report types" {
     for ([_]u8{ 0x42, 0x45, 0x47 }) |id| {
-        var report = [_]u8{0} ** 46;
+        var report: [46]u8 = @splat(0);
         report[0] = id;
         buttons(&report, 0xffffffff);
         for ([_]usize{ 6, 10, 14, 40 }) |offset| put16(&report, offset, 32767);
@@ -27,7 +27,7 @@ test "default local mapping is byte identical for all Triton report types" {
 }
 
 test "rear grips add mappings without suppressing physical buttons" {
-    var report = [_]u8{0} ** 18;
+    var report: [18]u8 = @splat(0);
     report[0] = 0x45;
     const options = triton.LocalOptions{ .grips = .{ 0x1000, 0x2000, 0x4000, 0x8000 } };
     var packet: [20]u8 = undefined;
@@ -43,7 +43,7 @@ test "rear grips add mappings without suppressing physical buttons" {
 
 test "pad replacement requires contact and restores the physical stick on release" {
     for ([_]u8{ 0x42, 0x45, 0x47 }) |id| {
-        var report = [_]u8{0} ** 46;
+        var report: [46]u8 = @splat(0);
         report[0] = id;
         put16(&report, 14, 123);
         put16(&report, 16, -456);
@@ -64,7 +64,7 @@ test "pad replacement requires contact and restores the physical stick on releas
 }
 
 test "touch gyro uses rate scale, clamps safely and ignores absent fields" {
-    var report = [_]u8{0} ** 46;
+    var report: [46]u8 = @splat(0);
     report[0] = 0x45;
     buttons(&report, 0x200000);
     put16(&report, 40, 900);
@@ -87,7 +87,7 @@ test "touch gyro uses rate scale, clamps safely and ignores absent fields" {
 }
 
 test "local mapping rejects invalid configuration and buffers" {
-    var report = [_]u8{0} ** 18;
+    var report: [18]u8 = @splat(0);
     report[0] = 0x45;
     var packet: [20]u8 = undefined;
     try std.testing.expectError(error.InvalidMappingOptions, triton.mapTritonToLocalXbox360(&report, &packet, .{ .gyro_full_scale_dps = 0 }));

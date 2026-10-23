@@ -196,7 +196,7 @@ tasks.named("check") {
 }
 
 dependencies {
-    implementation("computer.iroh:iroh:1.0.0") {
+    implementation("computer.iroh:iroh:1.2.0") {
         exclude(group = "net.java.dev.jna", module = "jna")
     }
     implementation("net.java.dev.jna:jna:5.17.0@aar")

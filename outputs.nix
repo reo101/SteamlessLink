@@ -50,7 +50,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
 
         zls = {
-          url = "github:zigtools/zls/0.16.0";
+          url = "github:zigtools/zls/0.17.0";
           inputs.nixpkgs.follows = "nixpkgs";
           inputs.zig-flake.follows = "zig-flake";
         };
@@ -110,6 +110,21 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
         androidX86_64Pkgs = import inputs.nixpkgs {
           inherit system;
+          overlays = [
+            (_: previous: {
+              wrapCCWith = args:
+                let
+                  wrapped = previous.wrapCCWith args;
+                in
+                wrapped.overrideAttrs (old: lib.optionalAttrs (wrapped.targetPrefix == "x86_64-unknown-linux-android-") {
+                  # nixpkgs enables GNU TLSDESC for Linux, but the Android NDK rejects it.
+                  postFixup = old.postFixup + ''
+                    substituteInPlace "$out/nix-support/add-local-cc-cflags-before.sh" \
+                      --replace-fail "'-mtls-dialect=gnu2'" ""
+                  '';
+                });
+            })
+          ];
           config = {
             android_sdk.accept_license = true;
             allowUnfree = true;
@@ -168,8 +183,8 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
         androidSdk = androidComposition.androidsdk;
         androidEmulatorSdk = androidEmulatorComposition.androidsdk;
-        zig = inputs'.zig-flake.packages.zig_0_16_0;
-        serverZig = pkgs.zig_0_16 or pkgs.zig;
+        zig = inputs'.zig-flake.packages.zig_0_17_0;
+        serverZig = pkgs.zig_0_17;
         craneLib = inputs.crane.mkLib pkgs;
         androidArm64CraneLib = inputs.crane.mkLib androidPkgs.pkgsCross.aarch64-android-prebuilt;
         androidX86_64CraneLib = inputs.crane.mkLib androidX86_64Pkgs;

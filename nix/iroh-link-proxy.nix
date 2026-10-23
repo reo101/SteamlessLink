@@ -11,9 +11,7 @@ let
     strictDeps = true;
   };
 
-  cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-    cargoHash = "sha256-hIEjRnU+N3mQgaDzyYu5hP9YWlkN9jlfkBDDvCt2tfE=";
-  });
+  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 in
 craneLib.buildPackage (commonArgs // {
   inherit cargoArtifacts;

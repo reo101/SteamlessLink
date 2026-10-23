@@ -210,7 +210,7 @@ fn clearActiveClient(conn_fd: c_int) void {
 }
 
 fn createListener(allocator: Allocator, config: *const Config) !c_int {
-    const host_z = try allocator.dupeZ(u8, config.listen_host);
+    const host_z = try allocator.dupeSentinel(u8, config.listen_host, 0);
     defer allocator.free(host_z);
 
     const family: c_int = if (std.mem.indexOfScalar(u8, config.listen_host, ':') == null) c.AF_INET else c.AF_INET6;
@@ -536,7 +536,7 @@ const UhidDevice = struct {
             break :blk info.descriptor;
         } else &default_descriptor;
 
-        const path_z = try std.heap.page_allocator.dupeZ(u8, config.uhid_path);
+        const path_z = try std.heap.page_allocator.dupeSentinel(u8, config.uhid_path, 0);
         defer std.heap.page_allocator.free(path_z);
         const fd = c.open(path_z.ptr, c.O_RDWR | c.O_CLOEXEC);
         if (std.c.errno(fd) != .SUCCESS) return error.UhidOpenFailed;

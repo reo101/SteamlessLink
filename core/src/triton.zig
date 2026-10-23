@@ -15,7 +15,7 @@ pub const XBOX360_PACKET_SIZE = 20;
 
 // SDL steam/controller_constants.h: SetSettingsValues, lizard mode and IMU mode.
 pub const EXTENDED_BLE_SETTINGS = [_]u8{ 0x87, 6, 9, 0, 0, 48, 0x18, 0 };
-pub const EXTENDED_USB_SETTINGS = [_]u8{1} ++ EXTENDED_BLE_SETTINGS ++ [_]u8{0} ** (64 - 1 - EXTENDED_BLE_SETTINGS.len);
+pub const EXTENDED_USB_SETTINGS = [_]u8{1} ++ EXTENDED_BLE_SETTINGS ++ @as([64 - 1 - EXTENDED_BLE_SETTINGS.len]u8, @splat(0));
 
 pub const Buttons = struct {
     pub const A: u32 = 0x0000_0001;
@@ -219,7 +219,7 @@ fn putI16Le(bytes: []u8, offset: usize, value: i16) void {
 
 test "maps current and legacy BLE reports to Xbox 360 packets" {
     for ([_]u8{ REPORT_ID_BLE_STATE, REPORT_ID_BLE_TIMESTAMP_STATE }) |report_id| {
-        var report = [_]u8{0} ** 64;
+        var report: [64]u8 = @splat(0);
         report[0] = report_id;
         putU32Le(&report, 2, Buttons.A | Buttons.DPAD_UP | Buttons.MENU);
         putI16Le(&report, 6, 0);
@@ -229,7 +229,7 @@ test "maps current and legacy BLE reports to Xbox 360 packets" {
         putI16Le(&report, 14, -200);
         putI16Le(&report, 16, 1234);
 
-        var packet = [_]u8{0xaa} ** XBOX360_PACKET_SIZE;
+        var packet: [XBOX360_PACKET_SIZE]u8 = @splat(0xaa);
         try mapTritonToXbox360(&report, &packet);
 
         const expected_buttons = XboxButtons.A | XboxButtons.DPAD_UP | XboxButtons.START;
@@ -246,7 +246,7 @@ test "maps current and legacy BLE reports to Xbox 360 packets" {
 
 test "optional pads and IMU require complete fields and preserve timestamp units" {
     for ([_]u8{ REPORT_ID_USB_STATE, REPORT_ID_BLE_STATE, REPORT_ID_BLE_TIMESTAMP_STATE }) |id| {
-        var report = [_]u8{0} ** 46;
+        var report: [46]u8 = @splat(0);
         report[0] = id;
         if (id == REPORT_ID_BLE_TIMESTAMP_STATE) {
             std.mem.writeInt(u16, report[32..34], 65535, .little);
@@ -264,10 +264,10 @@ test "optional pads and IMU require complete fields and preserve timestamp units
 }
 
 test "Xbox 360 mapper rejects invalid buffers" {
-    var packet = [_]u8{0} ** XBOX360_PACKET_SIZE;
+    var packet: [XBOX360_PACKET_SIZE]u8 = @splat(0);
     try std.testing.expectError(error.ReportTooShort, mapTritonToXbox360(&[_]u8{0x45}, &packet));
 
-    var report = [_]u8{0} ** 18;
+    var report: [18]u8 = @splat(0);
     report[0] = 0x99;
     try std.testing.expectError(error.UnsupportedReport, mapTritonToXbox360(&report, &packet));
     try std.testing.expectError(error.OutputBufferTooSmall, mapTritonToXbox360(&report, packet[0..19]));

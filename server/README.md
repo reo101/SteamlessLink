@@ -5,7 +5,7 @@ This directory contains the Steam-host half of SteamlessLink: a small Zig/Linux 
 ## Requirements
 
 - Linux with UHID enabled (`uhid` kernel module)
-- Zig 0.16+ to build from source, or the Nix package from this flake
+- Zig 0.17.0 to build from source, or the Nix package from this flake
 - write access to `/dev/uhid` for the daemon user
 - hidraw access for the Steam user
 - a trusted TCP path from the Android app to the daemon
@@ -47,7 +47,7 @@ Build the daemon with:
 nix build .#steamless-link-host
 ```
 
-On NixOS, import `nixosModules.steamless-link-host` from this flake and enable `services.steamless-link-host`. The flake module defaults to this flake's Zig 0.16-built package. If you import `nix/modules/steamless-link-host.nix` directly, set `services.steamless-link-host.package` to a package built with Zig 0.16+.
+On NixOS, import `nixosModules.steamless-link-host` from this flake and enable `services.steamless-link-host`. The flake module defaults to this flake's Zig 0.17-built package. If you import `nix/modules/steamless-link-host.nix` directly, set `services.steamless-link-host.package` to a package built with Zig 0.17.0.
 
 ## Security
 

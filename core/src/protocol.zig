@@ -90,7 +90,7 @@ pub const FrameHeader = struct {
 pub fn encodeFrameHeader(out: *[FRAME_HEADER_SIZE]u8, frame_type: FrameType, payload_len: usize) usize {
     const safe_len: usize = @min(payload_len, MAX_FRAME_PAYLOAD);
     out.* = .{
-        @intFromEnum(frame_type),
+        @backingInt(frame_type),
         @intCast((safe_len >> 8) & 0xff),
         @intCast(safe_len & 0xff),
     };
@@ -100,7 +100,7 @@ pub fn encodeFrameHeader(out: *[FRAME_HEADER_SIZE]u8, frame_type: FrameType, pay
 pub fn decodeFrameHeader(header: []const u8) ?FrameHeader {
     if (header.len != FRAME_HEADER_SIZE) return null;
     return .{
-        .frame_type = @enumFromInt(header[0]),
+        .frame_type = @fromBackingInt(header[0]),
         .payload_len = (@as(usize, header[1]) << 8) | header[2],
     };
 }
@@ -200,7 +200,7 @@ test "frame round trip" {
 test "unknown frame types round trip without losing their wire value" {
     var storage: [64]u8 = undefined;
     var writer = Io.Writer.fixed(&storage);
-    const unknown: FrameType = @enumFromInt(0xfe);
+    const unknown: FrameType = @fromBackingInt(@as(u8, 0xfe));
     try sendFrame(&writer, unknown, &.{ 0xab, 0xcd });
     try std.testing.expectEqualSlices(u8, &.{ 0xfe, 0, 2, 0xab, 0xcd }, writer.buffered());
     var reader = Io.Reader.fixed(writer.buffered());
@@ -258,25 +258,25 @@ test "device info carries an optional host-visible name" {
 }
 
 test "device info rejects invalid name extensions" {
-    var empty: [DEVICE_INFO_HEADER_SIZE + 2]u8 = .{0} ** (DEVICE_INFO_HEADER_SIZE + 2);
+    var empty: [DEVICE_INFO_HEADER_SIZE + 2]u8 = @splat(0);
     std.mem.writeInt(u16, empty[8..10], 1, .little);
     empty[10] = 1;
     empty[11] = 0;
     try std.testing.expectEqual(@as(?DeviceInfo, null), decodeDeviceInfo(&empty));
 
-    var oversized: [DEVICE_INFO_HEADER_SIZE + 1 + 1 + MAX_DEVICE_NAME_SIZE + 1]u8 = .{0} ** (DEVICE_INFO_HEADER_SIZE + 1 + 1 + MAX_DEVICE_NAME_SIZE + 1);
+    var oversized: [DEVICE_INFO_HEADER_SIZE + 1 + 1 + MAX_DEVICE_NAME_SIZE + 1]u8 = @splat(0);
     std.mem.writeInt(u16, oversized[8..10], 1, .little);
     oversized[10] = 1;
     oversized[11] = MAX_DEVICE_NAME_SIZE + 1;
     try std.testing.expectEqual(@as(?DeviceInfo, null), decodeDeviceInfo(&oversized));
 
-    var nul: [DEVICE_INFO_HEADER_SIZE + 3]u8 = .{0} ** (DEVICE_INFO_HEADER_SIZE + 3);
+    var nul: [DEVICE_INFO_HEADER_SIZE + 3]u8 = @splat(0);
     std.mem.writeInt(u16, nul[8..10], 1, .little);
     nul[10] = 1;
     nul[11] = 1;
     try std.testing.expectEqual(@as(?DeviceInfo, null), decodeDeviceInfo(&nul));
 
-    var invalid_utf8: [DEVICE_INFO_HEADER_SIZE + 3]u8 = .{0} ** (DEVICE_INFO_HEADER_SIZE + 3);
+    var invalid_utf8: [DEVICE_INFO_HEADER_SIZE + 3]u8 = @splat(0);
     std.mem.writeInt(u16, invalid_utf8[8..10], 1, .little);
     invalid_utf8[10] = 1;
     invalid_utf8[11] = 1;

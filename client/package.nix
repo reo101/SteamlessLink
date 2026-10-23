@@ -34,7 +34,6 @@ stdenv.mkDerivation (finalAttrs: {
 
     zig build \
       --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
-      --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR" \
       -Doptimize=ReleaseSafe \
       -Dcpu=baseline
 
@@ -48,7 +47,6 @@ stdenv.mkDerivation (finalAttrs: {
 
     zig build test \
       --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
-      --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR" \
       -Doptimize=ReleaseSafe \
       -Dcpu=baseline
 

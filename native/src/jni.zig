@@ -120,9 +120,9 @@ fn mapTritonToXbox360(
     const out_array_len = env.*.GetArrayLength(env, out_packet_array);
     if (out_array_len < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
 
-    var report = [_]u8{0} ** MAX_TRITON_REPORT_BYTES;
+    var report: [MAX_TRITON_REPORT_BYTES]u8 = @splat(0);
     const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
-    var packet = [_]u8{0} ** triton.XBOX360_PACKET_SIZE;
+    var packet: [triton.XBOX360_PACKET_SIZE]u8 = @splat(0);
     try triton.mapTritonToXbox360(report_bytes, &packet);
     env.*.SetByteArrayRegion(
         env,
@@ -142,9 +142,9 @@ fn mapTritonToGenericGamepad(
     const out_array_len = env.*.GetArrayLength(env, out_packet_array);
     if (out_array_len < generic_gamepad.INPUT_REPORT_SIZE) return error.OutputBufferTooSmall;
 
-    var report = [_]u8{0} ** MAX_TRITON_REPORT_BYTES;
+    var report: [MAX_TRITON_REPORT_BYTES]u8 = @splat(0);
     const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
-    var packet = [_]u8{0} ** generic_gamepad.INPUT_REPORT_SIZE;
+    var packet: [generic_gamepad.INPUT_REPORT_SIZE]u8 = @splat(0);
     try generic_gamepad.mapTritonToInput(report_bytes, &packet);
     env.*.SetByteArrayRegion(
         env,

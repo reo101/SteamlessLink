@@ -18,10 +18,11 @@ pub fn main(init: std.process.Init) !void {
         \\
         \\internal object RawProtocol {{
     , .{});
-    inline for (@typeInfo(protocol.FrameType).@"enum".fields) |field| {
-        var name: [field.name.len]u8 = undefined;
-        for (field.name, 0..) |byte, index| name[index] = std.ascii.toUpper(byte);
-        try writer.interface.print("\n    const val FRAME_{s} = 0x{x:0>2}", .{ name, field.value });
+    const frame_type = @typeInfo(protocol.FrameType).@"enum";
+    inline for (frame_type.field_names, frame_type.field_values) |field_name, field_value| {
+        var name: [field_name.len]u8 = undefined;
+        for (field_name, 0..) |byte, index| name[index] = std.ascii.toUpper(byte);
+        try writer.interface.print("\n    const val FRAME_{s} = 0x{x:0>2}", .{ name, field_value });
     }
     inline for (.{ "DEVICE_FRAME_HEADER_SIZE", "DEVICE_FRAME_TYPE_OFFSET", "DEVICE_BUNDLE_HEADER_SIZE", "DEVICE_BUNDLE_ENTRY_SIZE" }) |name| {
         try writer.interface.print("\n    const val {s} = {d}", .{ name, @field(protocol, name) });
@@ -127,8 +128,8 @@ pub fn main(init: std.process.Init) !void {
         \\    const val PACKET_SIZE = {d}
         \\    const val SENSOR_SIZE = {d}
     , .{ extended_gamepad.PACKET_SIZE, extended_gamepad.SENSOR_SIZE });
-    inline for (@typeInfo(extended_gamepad.Sensor).@"struct".decls) |decl| {
-        try writer.interface.print("\n    const val SENSOR_{s} = {d}", .{ decl.name, @field(extended_gamepad.Sensor, decl.name) });
+    inline for (@typeInfo(extended_gamepad.Sensor).@"struct".decl_names) |name| {
+        try writer.interface.print("\n    const val SENSOR_{s} = {d}", .{ name, @field(extended_gamepad.Sensor, name) });
     }
     try writer.interface.writeAll("\n    val REPORT_SIZES = intArrayOf(");
     for (extended_gamepad.REPORT_SIZES) |size| try writer.interface.print("{d}, ", .{size});

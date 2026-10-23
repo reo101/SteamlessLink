@@ -1,4 +1,4 @@
-# DO-NOT-EDIT. This file was auto-generated using github:vic/flake-file.
+# DO-NOT-EDIT. This file was auto-generated using github:denful/flake-file.
 # Use `nix run .#write-flake` to regenerate it.
 {
   outputs = inputs: import ./outputs.nix inputs;
@@ -22,7 +22,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     zls = {
-      url = "github:zigtools/zls/0.16.0";
+      url = "github:zigtools/zls/0.17.0";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         zig-flake.follows = "zig-flake";

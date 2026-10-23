@@ -142,7 +142,7 @@ fn putI16Le(bytes: []u8, offset: usize, value: i16) void {
 }
 
 test "maps Triton reports to a standard HID gamepad report" {
-    var report = [_]u8{0} ** 18;
+    var report: [18]u8 = @splat(0);
     report[0] = triton.REPORT_ID_BLE_STATE;
     std.mem.writeInt(u32, report[2..6], triton.Buttons.A | triton.Buttons.X | triton.Buttons.L | triton.Buttons.R | triton.Buttons.VIEW | triton.Buttons.MENU | triton.Buttons.STEAM | triton.Buttons.L3 | triton.Buttons.DPAD_UP | triton.Buttons.DPAD_RIGHT, .little);
     putI16Le(&report, 6, 0);
@@ -152,16 +152,16 @@ test "maps Triton reports to a standard HID gamepad report" {
     putI16Le(&report, 14, 0);
     putI16Le(&report, 16, -32768);
 
-    var packet = [_]u8{0xaa} ** INPUT_REPORT_SIZE;
+    var packet: [INPUT_REPORT_SIZE]u8 = @splat(0xaa);
     try mapTritonToInput(&report, &packet);
     try std.testing.expectEqualSlices(u8, &.{ 0x01, 0xd1, 0x3c, 0x01, 0x00, 0xff, 0x80, 0x00, 0x00, 0xff }, &packet);
 }
 
 test "generic gamepad rejects invalid buffers" {
-    var packet = [_]u8{0} ** INPUT_REPORT_SIZE;
+    var packet: [INPUT_REPORT_SIZE]u8 = @splat(0);
     try std.testing.expectError(error.ReportTooShort, mapTritonToInput(&[_]u8{0x45}, &packet));
 
-    var report = [_]u8{0} ** 18;
+    var report: [18]u8 = @splat(0);
     report[0] = 0x99;
     try std.testing.expectError(error.UnsupportedReport, mapTritonToInput(&report, &packet));
     try std.testing.expectError(error.OutputBufferTooSmall, mapTritonToInput(&report, packet[0 .. INPUT_REPORT_SIZE - 1]));

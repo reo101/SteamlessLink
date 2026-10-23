@@ -2,7 +2,7 @@
     .name = .steamless_link_host,
     .version = "0.1.0",
     .fingerprint = 0x3c9465450a895dc9,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .steamless_core = .{
             .path = "../core",

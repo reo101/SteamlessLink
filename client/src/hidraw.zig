@@ -129,11 +129,11 @@ pub const Device = struct {
             REPORT_TYPE_FEATURE => hidiocGFeature(buf.len),
             REPORT_TYPE_INPUT => hidiocGInput(buf.len),
             REPORT_TYPE_OUTPUT => hidiocGOutput(buf.len),
-            else => return .{ .err = @intFromEnum(linux.E.INVAL) },
+            else => return .{ .err = @backingInt(linux.E.INVAL) },
         };
         const rc = linux.ioctl(dev.file.handle, request, @intFromPtr(buf.ptr));
         const err = linux.errno(rc);
-        if (err != .SUCCESS) return .{ .err = @intFromEnum(err) };
+        if (err != .SUCCESS) return .{ .err = @backingInt(err) };
         return .{ .len = rc };
     }
 
@@ -143,7 +143,7 @@ pub const Device = struct {
         switch (report_type) {
             REPORT_TYPE_OUTPUT => {
                 // Plain hidraw write is the portable way to send output reports.
-                dev.writeReport(io, data) catch return @intFromEnum(linux.E.IO);
+                dev.writeReport(io, data) catch return @backingInt(linux.E.IO);
                 return 0;
             },
             REPORT_TYPE_FEATURE, REPORT_TYPE_INPUT => {
@@ -153,10 +153,10 @@ pub const Device = struct {
                     hidiocSInput(data.len);
                 const rc = linux.ioctl(dev.file.handle, request, @intFromPtr(data.ptr));
                 const err = linux.errno(rc);
-                if (err != .SUCCESS) return @intFromEnum(err);
+                if (err != .SUCCESS) return @backingInt(err);
                 return 0;
             },
-            else => return @intFromEnum(linux.E.INVAL),
+            else => return @backingInt(linux.E.INVAL),
         }
     }
 };

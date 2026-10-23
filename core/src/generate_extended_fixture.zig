@@ -4,7 +4,7 @@ const extended = @import("extended_gamepad.zig");
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.InvalidArgument;
-    var report = [_]u8{0} ** 46;
+    var report: [46]u8 = @splat(0);
     report[0] = 0x45;
     var neutral: [extended.PACKET_SIZE]u8 = undefined;
     try extended.mapTritonToInput(&report, &neutral);

@@ -28,6 +28,10 @@ nix develop -c gradle :app:installDebug
 CI uses `nix develop .#build -c gradle ...`, a build-only shell without
 language servers or developer diagnostics. The default shell extends it with
 those tools; both share the SDK, Zig, Gradle, and JNI configuration.
+The flake uses Zig 0.17.0 for Android and Linux builds, with ZLS 0.17.0 in the
+default shell. The Iroh proxy uses Rust Iroh 1.4.1. Android uses Kotlin/FFI
+1.2.0, whose native dependency is also Iroh 1.4.1. The Android initializer is
+vendored from that release. Nix still builds both native Android libraries.
 
 The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
 `x86_64`. Both generic HID profiles and local Xbox mode report that they are unavailable

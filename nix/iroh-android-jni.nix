@@ -9,24 +9,22 @@ let
   src = fetchFromGitHub {
     owner = "n0-computer";
     repo = "iroh-ffi";
-    rev = "v1.0.0";
-    hash = "sha256-AeXnM091a2MWHEJsMYlY/zy8WXKIKWO4uVdAeehWl8k=";
+    rev = "v1.2.0";
+    hash = "sha256-IUaONkuEXun/l75JSt3KcKIP4LOFuWgzfkmKmLE096Y=";
   };
 
   buildFor = craneLib: abi: pname: rustTargetEnv:
     let
       commonArgs = {
         inherit pname src;
-        version = "1.0.0";
+        version = "1.2.0";
         strictDeps = true;
         doCheck = false;
         cargoExtraArgs = "--lib";
       } // {
         "CARGO_TARGET_${rustTargetEnv}_RUSTFLAGS" = "-C link-arg=-Wl,-z,max-page-size=16384";
       };
-      cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-        cargoHash = "sha256-wUkb240T7icWb6X6JOcR5nfLhul+gjs+j4hL4HfSEdU=";
-      });
+      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
     in
     craneLib.buildPackage (commonArgs // {
       inherit cargoArtifacts;
@@ -44,7 +42,7 @@ let
 in
 stdenv.mkDerivation {
   pname = "iroh-android-jni";
-  version = "1.0.0";
+  version = "1.2.0";
   dontUnpack = true;
   installPhase = ''
     install -D ${arm64}/jniLibs/arm64-v8a/libiroh_ffi.so $out/jniLibs/arm64-v8a/libiroh_ffi.so

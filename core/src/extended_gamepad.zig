@@ -51,7 +51,7 @@ fn byteOffset(comptime T: type, comptime field: []const u8) usize {
     return @divExact(@bitOffsetOf(T, field), 8);
 }
 fn encode(comptime T: type, value: T, out: []u8) void {
-    const Bits = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Bits = @Int(.unsigned, @bitSizeOf(T));
     std.mem.writeInt(Bits, out[0..comptime wireSize(T)], @bitCast(value), .little);
 }
 pub const GAMEPAD_SIZE = wireSize(GamepadReport);
@@ -239,8 +239,8 @@ test "wire serialization excludes packed backing storage padding" {
 test "all descriptors match actual wire report lengths" {
     // Independent HID short-item decoding. Also forces every descriptor to instantiate.
     for (DESCRIPTORS, 0..) |descriptor, device| {
-        var inputs = [_]usize{0} ** 3;
-        var features = [_]usize{0} ** 3;
+        var inputs: [3]usize = @splat(0);
+        var features: [3]usize = @splat(0);
         var size: usize = 0;
         var count: usize = 0;
         var id: usize = 0;
@@ -273,7 +273,7 @@ test "all descriptors match actual wire report lengths" {
 
 test "extended profile preserves pads, paddles and both IMU layouts" {
     for ([_]u8{ 0x42, 0x45, 0x47 }) |id| {
-        var report = [_]u8{0} ** 46;
+        var report: [46]u8 = @splat(0);
         report[0] = id;
         std.mem.writeInt(u32, report[2..6], 0x2020080, .little); // L4, R4, left pad touch
         const pad: usize = if (id == 0x47) 20 else 18;
