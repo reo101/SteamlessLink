@@ -2,6 +2,9 @@ const std = @import("std");
 const c = @import("c");
 const core = @import("steamless-core");
 const protocol = core.protocol;
+const log = std.log.scoped(.host);
+
+pub const std_options: std.Options = .{ .logFn = core.log.logFn, .log_level = .debug };
 const uhid = @import("uhid.zig");
 const descriptor_io = @import("descriptor_io.zig");
 const readFd = descriptor_io.readFd;
@@ -37,7 +40,6 @@ const DEVICE_INFO_HEADER_SIZE = protocol.DEVICE_INFO_HEADER_SIZE;
 
 const DeviceInfo = protocol.DeviceInfo;
 
-const LogLevel = core.log.LogLevel;
 const UhidIdentity = uhid.Identity;
 
 const Config = struct {
@@ -46,7 +48,6 @@ const Config = struct {
     uhid_path: []const u8 = "/dev/uhid",
     iroh_ticket_file: ?[]const u8 = null,
     identity: UhidIdentity = .{},
-    log_level: LogLevel = .info,
 };
 
 const Frame = protocol.Frame;
@@ -114,7 +115,7 @@ fn parseArgs(argv: []const []const u8) !Config {
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             i += 1;
             if (i >= argv.len) return error.MissingArgument;
-            config.log_level = LogLevel.parse(argv[i]) orelse return error.InvalidLogLevel;
+            core.log.level = core.log.parseLevel(argv[i]) orelse return error.InvalidLogLevel;
         } else {
             std.debug.print("unknown argument: {s}\n", .{arg});
             printUsage();
@@ -148,14 +149,14 @@ fn runServer(io: std.Io, allocator: Allocator, config: *const Config) !void {
     const server_fd = try createListener(allocator, config);
     defer closeFd(server_fd);
 
-    log(config, .info, "listening on {s}:{d}", .{ config.listen_host, config.listen_port });
+    log.info("listening on {s}:{d}", .{ config.listen_host, config.listen_port });
     while (true) {
         const conn_fd = acceptClient(server_fd) catch |err| {
-            log(config, .warning, "accept failed: {s}", .{@errorName(err)});
+            log.warn("accept failed: {s}", .{@errorName(err)});
             continue;
         };
         const thread = std.Thread.spawn(.{}, handleClientThread, .{ conn_fd, config, io }) catch |err| {
-            log(config, .warning, "client thread spawn failed: {s}", .{@errorName(err)});
+            log.warn("client thread spawn failed: {s}", .{@errorName(err)});
             closeFd(conn_fd);
             continue;
         };
@@ -165,7 +166,7 @@ fn runServer(io: std.Io, allocator: Allocator, config: *const Config) !void {
 
 fn handleClientThread(conn_fd: c_int, config: *const Config, io: std.Io) void {
     handleClient(conn_fd, config, io) catch |err| {
-        log(config, .warning, "client failed: {s}", .{@errorName(err)});
+        log.warn("client failed: {s}", .{@errorName(err)});
     };
 }
 
@@ -236,25 +237,25 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
 
     var one: c_int = 1;
     _ = c.setsockopt(conn_fd, c.IPPROTO_TCP, c.TCP_NODELAY, &one, @sizeOf(c_int));
-    log(config, .info, "client connected fd={d}", .{conn_fd});
+    log.info("client connected fd={d}", .{conn_fd});
 
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
     var pending_frame: ?Frame = (try readFrame(conn_fd, &payload_buf)) orelse return;
     if (pending_frame.?.frame_type == .get_iroh_ticket) {
         if (pending_frame.?.payload.len != 0) {
-            log(config, .warning, "invalid Iroh ticket request", .{});
+            log.warn("invalid Iroh ticket request", .{});
             return;
         }
         const path = config.iroh_ticket_file orelse {
-            log(config, .warning, "Iroh ticket requested but no ticket file is configured", .{});
+            log.warn("Iroh ticket requested but no ticket file is configured", .{});
             return;
         };
         const ticket = readIrohTicket(io, path, &payload_buf) catch |err| {
-            log(config, .warning, "Iroh ticket unavailable: {s}", .{@errorName(err)});
+            log.warn("Iroh ticket unavailable: {s}", .{@errorName(err)});
             return;
         };
         try sendFrame(conn_fd, .iroh_ticket, ticket);
-        log(config, .info, "served Iroh ticket to bootstrap client", .{});
+        log.info("served Iroh ticket to bootstrap client", .{});
         return;
     }
 
@@ -270,11 +271,11 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
         pending_frame = null;
     } else if (pending_frame.?.frame_type == .device_info) {
         const info = decodeDeviceInfo(pending_frame.?.payload) orelse {
-            log(config, .warning, "invalid device-info frame", .{});
+            log.warn("invalid device-info frame", .{});
             return;
         };
         if (info.bus > std.math.maxInt(u16)) {
-            log(config, .warning, "unsupported HID bus 0x{x}", .{info.bus});
+            log.warn("unsupported HID bus 0x{x}", .{info.bus});
             return;
         }
         device_info = info;
@@ -315,7 +316,7 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
         stop.store(true, .release);
         _ = c.shutdown(conn_fd, c.SHUT_RDWR);
         reader.join();
-        log(config, .info, "client disconnected fd={d} reports={d}", .{ conn_fd, reports });
+        log.info("client disconnected fd={d} reports={d}", .{ conn_fd, reports });
     }
 
     var last_log_ns: i128 = 0;
@@ -325,7 +326,7 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
             break :blk value;
         } else blk: {
             const maybe_frame = readFrame(conn_fd, &payload_buf) catch |err| {
-                log(config, .warning, "client frame read failed: {s}", .{@errorName(err)});
+                log.warn("client frame read failed: {s}", .{@errorName(err)});
                 break;
             };
             break :blk maybe_frame orelse break;
@@ -352,9 +353,7 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
                     last_log_ns = now;
                     var head_buf: [23]u8 = undefined;
                     const report_id: u8 = if (frame.payload.len > 0) frame.payload[0] else 0;
-                    log(
-                        config,
-                        .info,
+                    log.info(
                         "input reports={d} id=0x{x:0>2} len={d} head={s}",
                         .{ reports, report_id, frame.payload.len, hexHead(frame.payload, &head_buf) },
                     );
@@ -373,8 +372,8 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
                 const err = readU16Le(frame.payload, 4);
                 try dev.setReportReply(request_id, err);
             },
-            .device_info => log(config, .warning, "ignoring late device-info frame", .{}),
-            else => log(config, .debug, "ignoring client frame type=0x{x:0>2} len={d}", .{ @backingInt(frame.frame_type), frame.payload.len }),
+            .device_info => log.warn("ignoring late device-info frame", .{}),
+            else => log.debug("ignoring client frame type=0x{x:0>2} len={d}", .{ @backingInt(frame.frame_type), frame.payload.len }),
         }
     }
 }
@@ -399,7 +398,7 @@ const UhidReaderArgs = struct {
 fn uhidReaderThread(args: *UhidReaderArgs) void {
     uhidReader(args) catch |err| {
         if (!args.stop.load(.acquire)) {
-            log(args.config, .warning, "UHID reader failed: {s}", .{@errorName(err)});
+            log.warn("UHID reader failed: {s}", .{@errorName(err)});
         }
     };
     args.stop.store(true, .release);
@@ -431,16 +430,16 @@ fn uhidReader(args: *UhidReaderArgs) !void {
             switch (event_type) {
                 UHID_START => {
                     const flags = if (payload.len >= 8) readU64Le(payload, 0) else 0;
-                    log(args.config, .info, "UHID start flags=0x{x}", .{flags});
+                    log.info("UHID start flags=0x{x}", .{flags});
                 },
-                UHID_STOP, UHID_OPEN, UHID_CLOSE => log(args.config, .info, "UHID event type={d}", .{event_type}),
+                UHID_STOP, UHID_OPEN, UHID_CLOSE => log.info("UHID event type={d}", .{event_type}),
                 UHID_OUTPUT => {
                     if (payload.len < UHID_DATA_MAX + 3) continue;
                     control_events += 1;
                     const size = @min(readU16Le(payload, UHID_DATA_MAX), UHID_DATA_MAX);
                     const report_type = payload[UHID_DATA_MAX + 2];
                     const data = payload[0..size];
-                    logControlEvent(args.config, control_events, "UHID output rtype={d} len={d}", .{ report_type, size });
+                    logControlEvent(control_events, "UHID output rtype={d} len={d}", .{ report_type, size });
                     var frame_payload: [1 + UHID_DATA_MAX]u8 = undefined;
                     frame_payload[0] = report_type;
                     @memcpy(frame_payload[1 .. 1 + data.len], data);
@@ -453,7 +452,6 @@ fn uhidReader(args: *UhidReaderArgs) !void {
                     const report_number = payload[4];
                     const report_type = payload[5];
                     logControlEvent(
-                        args.config,
                         control_events,
                         "UHID get_report id={d} rnum=0x{x:0>2} rtype={d}",
                         .{ request_id, report_number, report_type },
@@ -474,7 +472,6 @@ fn uhidReader(args: *UhidReaderArgs) !void {
                     const data_end = @min(@as(usize, 8) + size, payload.len);
                     const data = payload[8..data_end];
                     logControlEvent(
-                        args.config,
                         control_events,
                         "UHID set_report id={d} rnum=0x{x:0>2} rtype={d} len={d}",
                         .{ request_id, report_number, report_type, data.len },
@@ -486,7 +483,7 @@ fn uhidReader(args: *UhidReaderArgs) !void {
                     @memcpy(frame_payload[6 .. 6 + data.len], data);
                     try args.send(slot, .set_report, frame_payload[0 .. 6 + data.len]);
                 },
-                else => log(args.config, .debug, "UHID event type={d}", .{event_type}),
+                else => log.debug("UHID event type={d}", .{event_type}),
             }
         }
     }
@@ -494,7 +491,7 @@ fn uhidReader(args: *UhidReaderArgs) !void {
 
 fn openUhid(config: *const Config, info: ?DeviceInfo) !UhidDevice {
     const dev = try UhidDevice.open(config.uhid_path, config.identity, info);
-    log(config, .info, "created UHID device name={s} bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}", .{
+    log.info("created UHID device name={s} bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}", .{
         if (info) |value| (if (value.name.len != 0) value.name else config.identity.name) else config.identity.name,
         if (info) |value| value.bus else config.identity.bus,
         if (info) |value| value.vendor else config.identity.vendor,
@@ -549,13 +546,8 @@ fn monotonicNs() i128 {
     return @as(i128, ts.tv_sec) * std.time.ns_per_s + ts.tv_nsec;
 }
 
-fn log(config: *const Config, level: LogLevel, comptime format: []const u8, args: anytype) void {
-    core.log.log(config.log_level, level, format, args);
-}
-
-fn logControlEvent(config: *const Config, count: u64, comptime format: []const u8, args: anytype) void {
-    const level: LogLevel = if (count <= 20 or count % 100 == 0) .info else .debug;
-    log(config, level, format, args);
+fn logControlEvent(count: u64, comptime format: []const u8, args: anytype) void {
+    if (count <= 20 or count % 100 == 0) log.info(format, args) else log.debug(format, args);
 }
 
 test "device info decoder preserves descriptor" {

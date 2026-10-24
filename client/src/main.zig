@@ -10,7 +10,10 @@ const Io = std.Io;
 const core = @import("steamless-core");
 const protocol = core.protocol;
 const bytes = core.bytes;
-const LogLevel = core.log.LogLevel;
+const log = std.log.scoped(.controller);
+
+pub const std_options: std.Options = .{ .logFn = core.log.logFn, .log_level = .debug };
+
 const hidraw = @import("hidraw.zig");
 
 const Config = struct {
@@ -21,11 +24,6 @@ const Config = struct {
     port: u16 = 3244,
     reconnect_ms: u32 = 2000,
     once: bool = false,
-    log_level: LogLevel = .info,
-
-    fn log(config: *const Config, level: LogLevel, comptime format: []const u8, args: anytype) void {
-        core.log.log(config.log_level, level, format, args);
-    }
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -37,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         runOnce(io, &config) catch |err| switch (err) {
             error.Canceled => return,
             else => {
-                config.log(.warning, "session ended: {s}", .{@errorName(err)});
+                log.warn("session ended: {s}", .{@errorName(err)});
                 if (config.once) return err;
             },
         };
@@ -84,7 +82,7 @@ fn parseArgs(argv: []const []const u8, allocator: std.mem.Allocator) !Config {
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             i += 1;
             if (i >= argv.len) return error.MissingArgument;
-            config.log_level = LogLevel.parse(argv[i]) orelse return error.InvalidLogLevel;
+            core.log.level = core.log.parseLevel(argv[i]) orelse return error.InvalidLogLevel;
         } else {
             std.debug.print("unknown argument: {s}\n", .{arg});
             printUsage();
@@ -131,16 +129,16 @@ fn runOnce(io: Io, config: *const Config) !void {
     };
 
     var device = hidraw.Device.open(io, device_path) catch |err| {
-        config.log(.warning, "open {s} failed: {s}", .{ device_path, @errorName(err) });
+        log.warn("open {s} failed: {s}", .{ device_path, @errorName(err) });
         return error.DeviceOpenFailed;
     };
     defer device.close(io);
-    config.log(.info, "using device {s}", .{device_path});
+    log.info("using device {s}", .{device_path});
 
     var stream = try connectToHost(io, config.host, config.port);
     defer stream.close(io);
     setTcpNoDelay(&stream);
-    config.log(.info, "connected to {s}:{d}", .{ config.host, config.port });
+    log.info("connected to {s}:{d}", .{ config.host, config.port });
 
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
@@ -158,7 +156,7 @@ fn runOnce(io: Io, config: *const Config) !void {
         .descriptor = descriptor[0..device_info.descriptor_len],
     }, &device_info_payload) orelse return error.InvalidDeviceInfo;
     try protocol.sendFrame(&stream_writer.interface, .device_info, encoded_device_info);
-    config.log(.info, "sent device info bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}", .{
+    log.info("sent device info bus=0x{x:0>4} vid=0x{x:0>4} pid=0x{x:0>4} rd_size={d}", .{
         device_info.bus,
         device_info.vendor,
         device_info.product,
@@ -179,7 +177,7 @@ fn runOnce(io: Io, config: *const Config) !void {
         const input_result = input_future.cancel(io);
         input_result catch |err| switch (err) {
             error.Canceled => {},
-            else => config.log(.debug, "input loop: {s}", .{@errorName(err)}),
+            else => log.debug("input loop: {s}", .{@errorName(err)}),
         };
     }
 
@@ -233,7 +231,6 @@ const Bridge = struct {
     /// hidraw -> network. Runs concurrently with controlLoop.
     fn inputLoop(bridge: *Bridge) !void {
         const io = bridge.io;
-        const config = bridge.config;
         // On exit, unblock controlLoop's socket read so the session tears down.
         defer bridge.stream.shutdown(io, .both) catch {};
 
@@ -245,7 +242,7 @@ const Bridge = struct {
             reports += 1;
             if (reports == 1) {
                 var head_buf: [23]u8 = undefined;
-                config.log(.info, "first input report len={d} head={s}", .{
+                log.info("first input report len={d} head={s}", .{
                     n,
                     core.log.hexHead(report_buf[0..n], &head_buf),
                 });
@@ -258,7 +255,6 @@ const Bridge = struct {
     /// disconnects or the socket is shut down by inputLoop.
     fn controlLoop(bridge: *Bridge, reader: *Io.Reader) !void {
         const io = bridge.io;
-        const config = bridge.config;
         var payload_buf: [protocol.MAX_FRAME_PAYLOAD]u8 = undefined;
         while (true) {
             const frame = try protocol.readFrame(reader, &payload_buf) orelse return;
@@ -267,9 +263,9 @@ const Bridge = struct {
                     if (frame.payload.len < 2) continue;
                     const report_type = frame.payload[0];
                     const data = frame.payload[1..];
-                    config.log(.debug, "output rtype={d} len={d}", .{ report_type, data.len });
+                    log.debug("output rtype={d} len={d}", .{ report_type, data.len });
                     bridge.device.writeReport(io, data) catch |err| {
-                        config.log(.warning, "output write failed: {s}", .{@errorName(err)});
+                        log.warn("output write failed: {s}", .{@errorName(err)});
                     };
                 },
                 .get_report => {
@@ -286,13 +282,13 @@ const Bridge = struct {
                     bytes.writeU32Le(&reply, 0, request_id);
                     switch (result) {
                         .len => |len| {
-                            config.log(.debug, "get_report id={d} rnum=0x{x:0>2} len={d}", .{ request_id, report_number, len });
+                            log.debug("get_report id={d} rnum=0x{x:0>2} len={d}", .{ request_id, report_number, len });
                             bytes.writeU16Le(&reply, 4, 0);
                             @memcpy(reply[6 .. 6 + len], report_buf[0..len]);
                             try bridge.sendFrame(.get_report_reply, reply[0 .. 6 + len]);
                         },
                         .err => |errno| {
-                            config.log(.warning, "get_report id={d} rnum=0x{x:0>2} errno={d}", .{ request_id, report_number, errno });
+                            log.warn("get_report id={d} rnum=0x{x:0>2} errno={d}", .{ request_id, report_number, errno });
                             bytes.writeU16Le(&reply, 4, errno);
                             try bridge.sendFrame(.get_report_reply, reply[0..6]);
                         },
@@ -306,13 +302,13 @@ const Bridge = struct {
                     const data = frame.payload[6..];
 
                     const errno = if (data.len == 0)
-                        @as(u16, @intFromEnum(std.os.linux.E.INVAL))
+                        @as(u16, @backingInt(std.os.linux.E.INVAL))
                     else
                         bridge.device.setReport(io, report_type, data);
                     if (errno == 0) {
-                        config.log(.debug, "set_report id={d} rnum=0x{x:0>2} len={d}", .{ request_id, report_number, data.len });
+                        log.debug("set_report id={d} rnum=0x{x:0>2} len={d}", .{ request_id, report_number, data.len });
                     } else {
-                        config.log(.warning, "set_report id={d} rnum=0x{x:0>2} errno={d}", .{ request_id, report_number, errno });
+                        log.warn("set_report id={d} rnum=0x{x:0>2} errno={d}", .{ request_id, report_number, errno });
                     }
 
                     var reply: [6]u8 = undefined;
@@ -320,7 +316,7 @@ const Bridge = struct {
                     bytes.writeU16Le(&reply, 4, errno);
                     try bridge.sendFrame(.set_report_reply, &reply);
                 },
-                else => config.log(.debug, "ignoring frame type=0x{x:0>2} len={d}", .{ @intFromEnum(frame.frame_type), frame.payload.len }),
+                else => log.debug("ignoring frame type=0x{x:0>2} len={d}", .{ @backingInt(frame.frame_type), frame.payload.len }),
             }
         }
     }

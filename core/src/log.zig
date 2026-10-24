@@ -1,32 +1,30 @@
+//! Runtime log level for the daemons.
+//!
+//! `std.log` filters at comptime only, so a `--log-level` flag needs a global
+//! level and a `logFn` that drops messages the comptime level admitted.
+//! Executables install `logFn` through `std_options`.
+
 const std = @import("std");
 
-pub const LogLevel = enum(u8) {
-    debug = 0,
-    info = 1,
-    warning = 2,
-    err = 3,
+/// Set once during argument parsing, before worker threads start.
+pub var level: std.log.Level = .info;
 
-    pub fn parse(value: []const u8) ?LogLevel {
-        if (std.mem.eql(u8, value, "debug")) return .debug;
-        if (std.mem.eql(u8, value, "info")) return .info;
-        if (std.mem.eql(u8, value, "warning")) return .warning;
-        if (std.mem.eql(u8, value, "error")) return .err;
-        return null;
-    }
+pub fn logFn(
+    comptime message_level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (@backingInt(message_level) > @backingInt(level)) return;
+    std.log.defaultLog(message_level, scope, format, args);
+}
 
-    pub fn label(level: LogLevel) []const u8 {
-        return switch (level) {
-            .debug => "DEBUG",
-            .info => "INFO",
-            .warning => "WARNING",
-            .err => "ERROR",
-        };
-    }
-};
-
-pub fn log(min_level: LogLevel, level: LogLevel, comptime format: []const u8, args: anytype) void {
-    if (@intFromEnum(level) < @intFromEnum(min_level)) return;
-    std.debug.print("{s} " ++ format ++ "\n", .{level.label()} ++ args);
+pub fn parseLevel(value: []const u8) ?std.log.Level {
+    if (std.mem.eql(u8, value, "debug")) return .debug;
+    if (std.mem.eql(u8, value, "info")) return .info;
+    if (std.mem.eql(u8, value, "warning")) return .warn;
+    if (std.mem.eql(u8, value, "error")) return .err;
+    return null;
 }
 
 pub fn hexHead(data: []const u8, out: *[23]u8) []const u8 {
@@ -45,10 +43,11 @@ pub fn hexHead(data: []const u8, out: *[23]u8) []const u8 {
     return out[0..index];
 }
 
-test "log level parsing" {
-    try std.testing.expectEqual(LogLevel.debug, LogLevel.parse("debug").?);
-    try std.testing.expectEqual(LogLevel.err, LogLevel.parse("error").?);
-    try std.testing.expectEqual(@as(?LogLevel, null), LogLevel.parse("bogus"));
+test "log level parsing maps CLI names" {
+    try std.testing.expectEqual(std.log.Level.debug, parseLevel("debug").?);
+    try std.testing.expectEqual(std.log.Level.warn, parseLevel("warning").?);
+    try std.testing.expectEqual(std.log.Level.err, parseLevel("error").?);
+    try std.testing.expectEqual(@as(?std.log.Level, null), parseLevel("bogus"));
 }
 
 test "hexHead formats at most 8 bytes" {
