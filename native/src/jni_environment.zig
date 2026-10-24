@@ -69,6 +69,14 @@ fn methodEnum() type {
     return @Enum(Tag, .exhaustive, names.items, &values);
 }
 
+const VariadicCall = struct {
+    env: [*c]jni.JNIEnv = null,
+    object: jni.jobject = null,
+    method: jni.jmethodID = null,
+};
+
+var last_variadic_call: VariadicCall = .{};
+
 const TestState = struct {
     length: jni.jsize = 37,
     env: [*c]jni.JNIEnv = null,
@@ -99,8 +107,11 @@ const TestFunctions = struct {
         return object;
     }
 
-    fn callVariadic(env: *jni.JNIEnv, object: jni.jobject, method: jni.jmethodID, value: jni.jint) jni.jint {
-        return Environment.init(env).callVariadic(.CallIntMethod, .{ object, method }, .{value});
+    fn callIntMethod(env: [*c]jni.JNIEnv, object: jni.jobject, method: jni.jmethodID, ...) callconv(.c) jni.jint {
+        last_variadic_call = .{ .env = env, .object = object, .method = method };
+        var arguments = @cVaStart();
+        defer @cVaEnd(&arguments);
+        return @cVaArg(&arguments, jni.jint) + @cVaArg(&arguments, jni.jint);
     }
 };
 
@@ -182,6 +193,18 @@ test "argument tuples match every method signature without the bound environment
     }
 }
 
-test "variadic JNI dispatch compiles with typed fixed arguments" {
-    std.mem.doNotOptimizeAway(&TestFunctions.callVariadic);
+test "variadic dispatch forwards fixed and trailing arguments" {
+    var functions: Interface = std.mem.zeroes(Interface);
+    functions.CallIntMethod = TestFunctions.callIntMethod;
+    var raw_env: jni.JNIEnv = &functions;
+    const environment: Environment = .init(&raw_env);
+    const object: jni.jobject = @ptrFromInt(0x1000);
+    const method: jni.jmethodID = @ptrFromInt(0x2000);
+
+    const total = environment.callVariadic(.CallIntMethod, .{ object, method }, .{ @as(jni.jint, 7), @as(jni.jint, 35) });
+
+    try std.testing.expectEqual(@as(jni.jint, 42), total);
+    try std.testing.expectEqual(@as([*c]jni.JNIEnv, @ptrCast(&raw_env)), last_variadic_call.env);
+    try std.testing.expectEqual(object, last_variadic_call.object);
+    try std.testing.expectEqual(method, last_variadic_call.method);
 }
