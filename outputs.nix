@@ -70,7 +70,9 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
                 withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-link-host)
               );
               iroh.package = lib.mkDefault (
-                withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-link-iroh-proxy)
+                withSystem pkgs.stdenv.hostPlatform.system (
+                  { self', ... }: self'.packages.steamless-link-iroh-proxy
+                )
               );
             };
           };
@@ -80,7 +82,9 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           {
             imports = [ ./nix/modules/steamless-link-controller.nix ];
             services.steamless-link-controller.package = lib.mkDefault (
-              withSystem pkgs.stdenv.hostPlatform.system ({ self', ... }: self'.packages.steamless-link-controller)
+              withSystem pkgs.stdenv.hostPlatform.system (
+                { self', ... }: self'.packages.steamless-link-controller
+              )
             );
           };
       in
@@ -112,17 +116,21 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
           inherit system;
           overlays = [
             (_: previous: {
-              wrapCCWith = args:
+              wrapCCWith =
+                args:
                 let
                   wrapped = previous.wrapCCWith args;
                 in
-                wrapped.overrideAttrs (old: lib.optionalAttrs (wrapped.targetPrefix == "x86_64-unknown-linux-android-") {
-                  # nixpkgs enables GNU TLSDESC for Linux, but the Android NDK rejects it.
-                  postFixup = old.postFixup + ''
-                    substituteInPlace "$out/nix-support/add-local-cc-cflags-before.sh" \
-                      --replace-fail "'-mtls-dialect=gnu2'" ""
-                  '';
-                });
+                wrapped.overrideAttrs (
+                  old:
+                  lib.optionalAttrs (wrapped.targetPrefix == "x86_64-unknown-linux-android-") {
+                    # nixpkgs enables GNU TLSDESC for Linux, but the Android NDK rejects it.
+                    postFixup = old.postFixup + ''
+                      substituteInPlace "$out/nix-support/add-local-cc-cflags-before.sh" \
+                        --replace-fail "'-mtls-dialect=gnu2'" ""
+                    '';
+                  }
+                );
             })
           ];
           config = {
@@ -190,6 +198,13 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         androidX86_64CraneLib = inputs.crane.mkLib androidX86_64Pkgs;
       in
       {
+        packages.native-dependencies = pkgs.callPackage ./nix/native-dependencies.nix { zig = serverZig; };
+        packages.android-apk = pkgs.callPackage ./nix/android-apk.nix {
+          zig = serverZig;
+          inherit androidSdk;
+          irohJni = self'.packages.iroh-android-jni;
+          nativeDependencies = self'.packages.native-dependencies;
+        };
         packages.steamless-link-host = pkgs.callPackage ./server/package.nix { zig = serverZig; };
         packages.steamless-link-controller = pkgs.callPackage ./client/package.nix { zig = serverZig; };
         packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
@@ -202,10 +217,11 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
         packages.android-emulator-client = pkgs.callPackage ./nix/android-emulator-client.nix {
           androidSdk = androidEmulatorSdk;
+          androidApk = self'.packages.android-apk;
         };
         packages.android-emulator-link-test = pkgs.callPackage ./nix/android-emulator-link-test.nix {
           androidSdk = androidEmulatorSdk;
-          steamlessIrohJni = self'.packages.iroh-android-jni;
+          androidApk = self'.packages.android-apk;
           steamlessLinkIrohProxy = self'.packages.steamless-link-iroh-proxy;
         };
         packages.android-emulator-iroh-test = pkgs.writeShellApplication {
@@ -215,15 +231,17 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
             STEAMLESS_ANDROID_TEST_IROH=1 exec steamless-android-emulator-link-test "$@"
           '';
         };
-        packages.android-emulator-link-vm-test-driver = pkgs.testers.runNixOSTest (import ./nix/tests/android-emulator-link.nix {
-          inherit pkgs lib;
-          steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
-          steamlessLinkHostPackage = self'.packages.steamless-link-host;
-          androidEmulatorClient = self'.packages.android-emulator-client;
-          androidSdk = androidEmulatorSdk;
-        });
+        packages.android-emulator-link-vm-test-driver = pkgs.testers.runNixOSTest (
+          import ./nix/tests/android-emulator-link.nix {
+            inherit pkgs lib;
+            steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
+            steamlessLinkHostPackage = self'.packages.steamless-link-host;
+            androidEmulatorClient = self'.packages.android-emulator-client;
+            androidSdk = androidEmulatorSdk;
+          }
+        );
         packages.android-emulator-link-vm-test = pkgs.callPackage ./nix/android-emulator-link-vm-test.nix {
-          androidSdk = androidEmulatorSdk;
+          androidApk = self'.packages.android-apk;
           testDriver = self'.packages.android-emulator-link-vm-test-driver.driver;
         };
         packages.default = self'.packages.steamless-link-host;
@@ -250,66 +268,81 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
 
         checks = lib.optionalAttrs pkgs.stdenv.isLinux {
-          iroh-proxy-roundtrip = pkgs.runCommand "steamless-link-iroh-proxy-roundtrip" { nativeBuildInputs = [ pkgs.python3 pkgs.coreutils ]; } ''
-            set -euo pipefail
-            proxy=${lib.getExe self'.packages.steamless-link-iroh-proxy}
-            tmp=$(mktemp -d)
-            cleanup() { jobs -pr | xargs -r kill 2>/dev/null || true; rm -rf "$tmp"; }
-            trap cleanup EXIT
+          android-apk = self'.packages.android-apk;
+          iroh-proxy-roundtrip =
+            pkgs.runCommand "steamless-link-iroh-proxy-roundtrip"
+              {
+                nativeBuildInputs = [
+                  pkgs.python3
+                  pkgs.coreutils
+                ];
+              }
+              ''
+                set -euo pipefail
+                proxy=${lib.getExe self'.packages.steamless-link-iroh-proxy}
+                tmp=$(mktemp -d)
+                cleanup() { jobs -pr | xargs -r kill 2>/dev/null || true; rm -rf "$tmp"; }
+                trap cleanup EXIT
 
-            python -u - "$tmp/ports" <<'PY' &
-            import socket, sys
-            ports_file=sys.argv[1]
-            target=socket.socket(); target.bind(('127.0.0.1',0)); target.listen()
-            iroh=socket.socket(); iroh.bind(('127.0.0.1',0))
-            open(ports_file,'w').write(f'{target.getsockname()[1]} {iroh.getsockname()[1]}\n')
-            iroh.close()
-            while True:
-                conn,_=target.accept()
+                python -u - "$tmp/ports" <<'PY' &
+                import socket, sys
+                ports_file=sys.argv[1]
+                target=socket.socket(); target.bind(('127.0.0.1',0)); target.listen()
+                iroh=socket.socket(); iroh.bind(('127.0.0.1',0))
+                open(ports_file,'w').write(f'{target.getsockname()[1]} {iroh.getsockname()[1]}\n')
+                iroh.close()
                 while True:
-                    data=conn.recv(65536)
-                    if not data: break
-                    conn.sendall(data)
-                conn.close()
-            PY
+                    conn,_=target.accept()
+                    while True:
+                        data=conn.recv(65536)
+                        if not data: break
+                        conn.sendall(data)
+                    conn.close()
+                PY
 
-            while [ ! -s "$tmp/ports" ]; do sleep 0.05; done
-            read target_port iroh_port < "$tmp/ports"
-            identity="$tmp/identity.key"
-            STEAMLESS_IROH_BIND_ADDR="127.0.0.1:$iroh_port" "$proxy" --identity-key "$identity" "127.0.0.1:$target_port" >"$tmp/ticket" 2>"$tmp/proxy.log" &
-            proxy_pid=$!
-            for i in $(seq 1 100); do [ -s "$tmp/ticket" ] && break; sleep 0.1; done
-            test -s "$tmp/ticket"
-            ticket=$(head -n1 "$tmp/ticket")
-            test "$(stat -c %a "$identity")" = 600
-            test "$(stat -c %s "$identity")" = 32
+                while [ ! -s "$tmp/ports" ]; do sleep 0.05; done
+                read target_port iroh_port < "$tmp/ports"
+                identity="$tmp/identity.key"
+                STEAMLESS_IROH_BIND_ADDR="127.0.0.1:$iroh_port" "$proxy" --identity-key "$identity" "127.0.0.1:$target_port" >"$tmp/ticket" 2>"$tmp/proxy.log" &
+                proxy_pid=$!
+                for i in $(seq 1 100); do [ -s "$tmp/ticket" ] && break; sleep 0.1; done
+                test -s "$tmp/ticket"
+                ticket=$(head -n1 "$tmp/ticket")
+                test "$(stat -c %a "$identity")" = 600
+                test "$(stat -c %s "$identity")" = 32
 
-            kill "$proxy_pid"
-            wait "$proxy_pid" || true
-            sleep 0.1
-            STEAMLESS_IROH_BIND_ADDR="127.0.0.1:$iroh_port" "$proxy" --identity-key "$identity" "127.0.0.1:$target_port" >"$tmp/restarted-ticket" 2>>"$tmp/proxy.log" &
-            for i in $(seq 1 100); do [ -s "$tmp/restarted-ticket" ] && break; sleep 0.1; done
-            test -s "$tmp/restarted-ticket"
-            printf steamless-iroh-ok | STEAMLESS_IROH_BIND_ADDR=127.0.0.1:0 timeout 30 "$proxy" connect "$ticket" >"$tmp/out"
-            test "$(cat "$tmp/out")" = steamless-iroh-ok
-            touch $out
-          '';
-          steamless-link-host-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-link-host.nix {
-            inherit pkgs lib;
-            steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
-            steamlessLinkHostPackage = self'.packages.steamless-link-host;
-          });
-          steamless-link-controller-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/steamless-link-controller.nix {
-            inherit pkgs lib;
-            steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
-            steamlessLinkHostPackage = self'.packages.steamless-link-host;
-            steamlessLinkControllerModule = config.flake.nixosModules.steamless-link-controller;
-            steamlessLinkControllerPackage = self'.packages.steamless-link-controller;
-          });
-          steamless-uinput-gamepad-nixos = pkgs.testers.runNixOSTest (import ./nix/tests/uinput-gamepad.nix {
-            inherit pkgs lib;
-            uinputGamepadPackage = self'.packages.steamless-uinput-gamepad;
-          });
+                kill "$proxy_pid"
+                wait "$proxy_pid" || true
+                sleep 0.1
+                STEAMLESS_IROH_BIND_ADDR="127.0.0.1:$iroh_port" "$proxy" --identity-key "$identity" "127.0.0.1:$target_port" >"$tmp/restarted-ticket" 2>>"$tmp/proxy.log" &
+                for i in $(seq 1 100); do [ -s "$tmp/restarted-ticket" ] && break; sleep 0.1; done
+                test -s "$tmp/restarted-ticket"
+                printf steamless-iroh-ok | STEAMLESS_IROH_BIND_ADDR=127.0.0.1:0 timeout 30 "$proxy" connect "$ticket" >"$tmp/out"
+                test "$(cat "$tmp/out")" = steamless-iroh-ok
+                touch $out
+              '';
+          steamless-link-host-nixos = pkgs.testers.runNixOSTest (
+            import ./nix/tests/steamless-link-host.nix {
+              inherit pkgs lib;
+              steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
+              steamlessLinkHostPackage = self'.packages.steamless-link-host;
+            }
+          );
+          steamless-link-controller-nixos = pkgs.testers.runNixOSTest (
+            import ./nix/tests/steamless-link-controller.nix {
+              inherit pkgs lib;
+              steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
+              steamlessLinkHostPackage = self'.packages.steamless-link-host;
+              steamlessLinkControllerModule = config.flake.nixosModules.steamless-link-controller;
+              steamlessLinkControllerPackage = self'.packages.steamless-link-controller;
+            }
+          );
+          steamless-uinput-gamepad-nixos = pkgs.testers.runNixOSTest (
+            import ./nix/tests/uinput-gamepad.nix {
+              inherit pkgs lib;
+              uinputGamepadPackage = self'.packages.steamless-uinput-gamepad;
+            }
+          );
         };
 
         devShells.build = pkgs.mkShell {
@@ -330,18 +363,20 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
         };
 
         devShells.default = self'.devShells.build.overrideAttrs (old: {
-          nativeBuildInputs = old.nativeBuildInputs ++ (with pkgs; [
-            android-tools
-            inputs'.zls.packages.default
-            kotlin
-            kotlin-language-server
-            ktlint
-            detekt
-            jq
-            netcat-gnu
-            openssl
-            usbutils
-          ]);
+          nativeBuildInputs =
+            old.nativeBuildInputs
+            ++ (with pkgs; [
+              android-tools
+              inputs'.zls.packages.default
+              kotlin
+              kotlin-language-server
+              ktlint
+              detekt
+              jq
+              netcat-gnu
+              openssl
+              usbutils
+            ]);
 
           shellHook = ''
             echo "SteamlessLink Android/Kotlin dev shell"

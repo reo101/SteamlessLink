@@ -1,9 +1,10 @@
 {
   writeShellApplication,
   androidSdk,
-  gradle,
-  jdk17,
-  python3,
+  androidApk,
+  coreutils,
+  gnugrep,
+  gnused,
 }:
 
 writeShellApplication {
@@ -11,23 +12,25 @@ writeShellApplication {
   excludeShellChecks = [ "SC2329" ];
   runtimeInputs = [
     androidSdk
-    gradle
-    jdk17
-    python3
+    coreutils
+    gnugrep
+    gnused
   ];
   text = ''
     set -euo pipefail
 
     export ANDROID_HOME=${androidSdk}/libexec/android-sdk
     export ANDROID_SDK_ROOT="$ANDROID_HOME"
-    export JAVA_HOME=${jdk17.home}
-    export GRADLE_OPTS="-Dorg.gradle.project.android.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2 ''${GRADLE_OPTS:-}"
 
-    avdmanager="$ANDROID_HOME/cmdline-tools/20.0/bin/avdmanager"
-    if [ ! -x "$avdmanager" ]; then
-      echo "error: avdmanager not found at $avdmanager" >&2
-      exit 1
-    fi
+    avdmanager="$(command -v avdmanager)"
+    adb="$(command -v adb)"
+    emulator="$(command -v emulator)"
+    for tool in "$avdmanager" "$adb" "$emulator"; do
+      if [ ! -x "$tool" ]; then
+        echo "error: Android SDK tool not found: $tool" >&2
+        exit 1
+      fi
+    done
 
     project_root="''${STEAMLESSLINK_ROOT:-$PWD}"
     package_name="xyz.reo101.steamlesslink"
@@ -49,7 +52,7 @@ writeShellApplication {
     emulator_pid=""
     cleanup() {
       set +e
-      "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" emu kill >/dev/null 2>&1 || true
+      "$adb" -s "$adb_serial" emu kill >/dev/null 2>&1 || true
       if [ -n "$emulator_pid" ]; then wait "$emulator_pid" 2>/dev/null || true; fi
       rm -rf "$workdir"
     }
@@ -62,11 +65,7 @@ writeShellApplication {
     fi
 
     cd "$project_root"
-    apk="''${STEAMLESSLINK_APK:-}"
-    if [ -z "$apk" ]; then
-      gradle --no-daemon :app:assembleDebug
-      apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"
-    fi
+    apk="''${STEAMLESSLINK_APK:-${androidApk}/app-debug.apk}"
 
     mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_EMULATOR_HOME"
     printf 'no\n' | "$avdmanager" create avd \
@@ -80,8 +79,8 @@ writeShellApplication {
       -e 's/^vm[.]heapSize=.*/vm.heapSize=256/' \
       "$ANDROID_AVD_HOME/$avd_name.avd/config.ini"
 
-    "$ANDROID_HOME/platform-tools/adb" start-server >/dev/null
-    "$ANDROID_HOME/emulator/emulator" \
+    "$adb" start-server >/dev/null
+    "$emulator" \
       -avd "$avd_name" \
       -no-window \
       -no-snapshot \
@@ -98,7 +97,7 @@ writeShellApplication {
 
     device_deadline=$((SECONDS + 60))
     while [ "$SECONDS" -lt "$device_deadline" ]; do
-      if "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" get-state >/dev/null 2>&1; then
+      if "$adb" -s "$adb_serial" get-state >/dev/null 2>&1; then
         break
       fi
       if ! kill -0 "$emulator_pid" 2>/dev/null; then
@@ -108,7 +107,7 @@ writeShellApplication {
       fi
       sleep 2
     done
-    if ! "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" get-state >/dev/null 2>&1; then
+    if ! "$adb" -s "$adb_serial" get-state >/dev/null 2>&1; then
       echo "error: adb did not see $adb_serial" >&2
       tail -100 "$workdir/emulator.log" >&2 || true
       exit 1
@@ -117,7 +116,7 @@ writeShellApplication {
     boot_deadline=$((SECONDS + 180))
     booted=""
     while [ "$SECONDS" -lt "$boot_deadline" ]; do
-      booted="$($ANDROID_HOME/platform-tools/adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+      booted="$($adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
       if [ "$booted" = 1 ]; then break; fi
       sleep 2
     done
@@ -127,14 +126,14 @@ writeShellApplication {
       exit 1
     fi
 
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" install -r "$apk" >/dev/null
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1 || true
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_SCAN >/dev/null 2>&1 || true
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -c >/dev/null || true
+    "$adb" -s "$adb_serial" install -r "$apk" >/dev/null
+    "$adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
+    "$adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1 || true
+    "$adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_SCAN >/dev/null 2>&1 || true
+    "$adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
+    "$adb" -s "$adb_serial" logcat -c >/dev/null || true
 
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" shell am start \
+    "$adb" -s "$adb_serial" shell am start \
       -n "$package_name/.MainActivity" \
       --ez xyz.reo101.steamlesslink.extra.AUTOSTART true \
       --es xyz.reo101.steamlesslink.extra.HOST "$bridge_host" \
@@ -144,7 +143,7 @@ writeShellApplication {
 
     ready_deadline=$((SECONDS + 45))
     while [ "$SECONDS" -lt "$ready_deadline" ]; do
-      logs="$($ANDROID_HOME/platform-tools/adb -s "$adb_serial" logcat -d -v time -s ControllerBridge AndroidRuntime 2>/dev/null || true)"
+      logs="$($adb -s "$adb_serial" logcat -d -v time -s ControllerBridge AndroidRuntime 2>/dev/null || true)"
       if printf '%s\n' "$logs" | grep -q 'Connected to Steamless Link host'; then
         if [ -n "$ready_file" ]; then printf 'ready\n' > "$ready_file"; fi
         if [ "$hold" = 1 ]; then
@@ -163,7 +162,7 @@ writeShellApplication {
     done
 
     echo "error: Android app did not connect to the Steamless Link host" >&2
-    "$ANDROID_HOME/platform-tools/adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport AndroidRuntime >&2 || true
+    "$adb" -s "$adb_serial" logcat -d -v time -s ControllerBridge FakeTritonTransport AndroidRuntime >&2 || true
     exit 1
   '';
 }

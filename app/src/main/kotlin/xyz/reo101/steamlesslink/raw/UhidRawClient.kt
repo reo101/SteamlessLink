@@ -1,6 +1,8 @@
 package xyz.reo101.steamlesslink.raw
 
 import xyz.reo101.steamlesslink.protocol.RawProtocol
+import xyz.reo101.steamlesslink.protocol.encodeFrameHeader
+import xyz.reo101.steamlesslink.protocol.encodeDeviceBundle
 import xyz.reo101.steamlesslink.util.hex
 import xyz.reo101.steamlesslink.util.i32Le
 import xyz.reo101.steamlesslink.util.putI32Le
@@ -302,16 +304,24 @@ class RawUhidConnection(
     val output: OutputStream,
     private val closeAction: () -> Unit,
 ) : Closeable {
-    override fun close() = closeAction()
+    private val closed = AtomicBoolean(false)
+    override fun close() {
+        if (closed.compareAndSet(false, true)) closeAction()
+    }
 
     companion object {
-        fun tcp(host: String, port: Int, connectTimeoutMs: Int = 10_000): RawUhidConnection {
-            val socket = Socket().apply {
-                tcpNoDelay = true
-                connect(InetSocketAddress(host, port), connectTimeoutMs)
-                soTimeout = 0
+        fun tcp(host: String, port: Int, connectTimeoutMs: Int = 10_000, onSocket: (Socket) -> Unit = {}): RawUhidConnection {
+            val socket = Socket()
+            try {
+                onSocket(socket)
+                socket.tcpNoDelay = true
+                socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
+                socket.soTimeout = 0
+                return RawUhidConnection(socket.getInputStream(), socket.getOutputStream()) { socket.close() }
+            } catch (error: Exception) {
+                socket.close()
+                throw error
             }
-            return RawUhidConnection(socket.getInputStream(), socket.getOutputStream()) { socket.close() }
         }
     }
 }

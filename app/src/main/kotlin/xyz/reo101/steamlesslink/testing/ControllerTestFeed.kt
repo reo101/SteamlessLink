@@ -22,11 +22,14 @@ internal object ControllerTestFeed {
         private set
     private var seenButtons = 0u
     private var lastPublishedMs = Long.MIN_VALUE
+    private var generation = 0L
 
-    @Synchronized fun begin(label: String) {
+    @Synchronized fun begin(label: String): Long {
+        generation += 1
         session = label
         status = "Starting capture"
         clear()
+        return generation
     }
 
     @Synchronized fun clear() {
@@ -36,6 +39,7 @@ internal object ControllerTestFeed {
     }
 
     @Synchronized fun stop() {
+        generation += 1
         status = "Stopped"
         clear()
     }
@@ -48,8 +52,9 @@ internal object ControllerTestFeed {
         output: List<Pair<Int, ByteArray>>,
         disposition: String,
         nowMs: Long = System.nanoTime() / 1_000_000,
+        sessionId: Long? = null,
     ) {
-        if (!observing) return
+        if (!observing || (sessionId != null && sessionId != generation)) return
         seenButtons = seenButtons or state.buttons
         if (lastPublishedMs != Long.MIN_VALUE && nowMs - lastPublishedMs < 100) return
         lastPublishedMs = nowMs

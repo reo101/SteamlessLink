@@ -338,12 +338,15 @@ let
     '';
   };
 
-  extendedFixture = pkgs.runCommand "extended-gamepad-fixture.json" {
-    nativeBuildInputs = [ (pkgs.zig_0_16 or pkgs.zig) ];
-  } ''
-    export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-    zig run ${../../core/src}/generate_extended_fixture.zig -- "$out"
-  '';
+  extendedFixture =
+    pkgs.runCommand "extended-gamepad-fixture.json"
+      {
+        nativeBuildInputs = [ pkgs.zig_0_17 ];
+      }
+      ''
+        export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+        zig run ${../../core/src}/generate_extended_fixture.zig -- "$out"
+      '';
   extendedTest = "${lib.getExe pkgs.python3} ${./extended-gamepad.py}";
 
   baseNode =
@@ -376,7 +379,11 @@ in
           steamlessLinkHostModule
         ];
 
-        boot.kernelModules = [ "hid-sensor-hub" "hid-sensor-accel-3d" "hid-sensor-gyro-3d" ];
+        boot.kernelModules = [
+          "hid-sensor-hub"
+          "hid-sensor-accel-3d"
+          "hid-sensor-gyro-3d"
+        ];
         users.groups.steam = { };
         users.users.steam = {
           isSystemUser = true;

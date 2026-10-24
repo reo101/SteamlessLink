@@ -7,7 +7,10 @@
 stdenv.mkDerivation {
   pname = "steamless-uinput-gamepad";
   version = "0.1.0";
-  src = lib.cleanSource ../.;
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../native/src/uinput_gamepad.zig;
+  };
 
   nativeBuildInputs = [ zig ];
 

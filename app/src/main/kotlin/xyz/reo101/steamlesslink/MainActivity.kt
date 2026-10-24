@@ -283,6 +283,8 @@ class MainActivity : Activity() {
         }, "iroh-ticket-bootstrap").start()
     }
 
+    // API 26-32 do not support RECEIVER_NOT_EXPORTED. The API 33 branch sets it.
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onStart() {
         super.onStart()
         val filter = IntentFilter(ControllerBridgeService.ACTION_STATUS)
@@ -432,8 +434,11 @@ class MainActivity : Activity() {
         if (permissions.isNotEmpty()) requestPermissions(permissions.toTypedArray(), 100)
     }
 
+    // Both helpers are called only after appendBluetoothStatus checks CONNECT.
+    @android.annotation.SuppressLint("MissingPermission")
     private fun BluetoothDevice.safeName(): String = name ?: "(unnamed)"
 
+    @android.annotation.SuppressLint("MissingPermission")
     private fun isSteamControllerCandidate(device: BluetoothDevice): Boolean {
         val name = device.safeName()
         val isLe = (device.type and BluetoothDevice.DEVICE_TYPE_LE) != 0 ||

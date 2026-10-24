@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -16,7 +17,8 @@ import android.os.Build
 import xyz.reo101.steamlesslink.protocol.ExtendedGamepadProtocol
 import xyz.reo101.steamlesslink.util.hex
 import xyz.reo101.steamlesslink.util.u8
-import java.io.Closeable
+import xyz.reo101.steamlesslink.triton.CaptureLifecycle
+import xyz.reo101.steamlesslink.triton.TritonTransport
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -32,13 +34,14 @@ class BleTritonTransport(
     private val onStatus: (String) -> Unit,
     private val enableLizardModeRefresh: Boolean = true,
     private val enableImu: Boolean = false,
-) : Closeable {
+    private val onFailure: (String) -> Unit = {},
+) : TritonTransport {
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter = bluetoothManager.adapter
     private var gatt: BluetoothGatt? = null
     private var reportCharacteristic: BluetoothGattCharacteristic? = null
     private val outputReportCharacteristics = mutableMapOf<Int, BluetoothGattCharacteristic>()
-    private val pendingNotificationCharacteristics = ArrayDeque<BluetoothGattCharacteristic>()
+    private var inputCharacteristic: BluetoothGattCharacteristic? = null
     private val queuedOutputReports = ArrayDeque<ByteArray>()
     private val outputQueueLock = Object()
     private val outputExecutor = Executors.newSingleThreadExecutor { Thread(it, "ble-triton-output-writer") }
@@ -52,8 +55,8 @@ class BleTritonTransport(
     private val reportIoLock = Any()
     private val pendingWrite = AtomicReference<PendingWrite?>(null)
     private val pendingRead = AtomicReference<PendingRead?>(null)
-    private val readyLatch = CountDownLatch(1)
-    @Volatile private var ready = false
+    private val lifecycle = CaptureLifecycle(onFailure)
+    private var awaitingMtu = false
     private var lastNotificationStatusAtMs = 0L
     private var lastOutputDropStatusAtMs = 0L
 
@@ -61,7 +64,7 @@ class BleTritonTransport(
         outputExecutor.execute(::outputWriteLoop)
     }
 
-    fun start() {
+    override fun start() {
         val device = findBondedSteamController()
         if (device != null) {
             connect(device)
@@ -88,7 +91,7 @@ class BleTritonTransport(
     private fun startScan() {
         val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
-            onStatus("BLE scanner unavailable; is Bluetooth enabled?")
+            failCapture("BLE scanner unavailable; is Bluetooth enabled?")
             return
         }
         onStatus("No bonded Steam Controller found; scanning for BLE Steam Controller")
@@ -102,13 +105,14 @@ class BleTritonTransport(
         scanExecutor?.schedule({
             if (scanning) {
                 stopScan()
-                onStatus("BLE scan timed out; pair the controller or wake it and retry")
+                failCapture("BLE scan timed out; pair the controller or wake it and retry")
             }
         }, SCAN_TIMEOUT_SECONDS, TimeUnit.SECONDS)
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            if (lifecycle.isClosed || !scanning) return
             val advertisedName = result.scanRecord?.deviceName ?: result.device.safeName()
             if (!isSteamControllerName(advertisedName)) return
             onStatus("Found BLE $advertisedName (${result.device.address}); connecting")
@@ -118,7 +122,7 @@ class BleTritonTransport(
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
-            onStatus("BLE scan failed error=$errorCode")
+            failCapture("BLE scan failed error=$errorCode")
         }
     }
 
@@ -129,46 +133,40 @@ class BleTritonTransport(
     }
 
     private fun connect(device: BluetoothDevice) {
+        if (lifecycle.isClosed) return
         onStatus("Connecting BLE ${device.safeName()} (${device.address})")
-        gatt = if (Build.VERSION.SDK_INT >= 23) {
-            device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            @Suppress("DEPRECATION")
-            device.connectGatt(context, false, callback)
-        }
+        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        if (lifecycle.isClosed) closeGatt()
     }
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (lifecycle.isClosed) { runCatching { gatt.close() }; return }
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                onStatus("BLE connection state failed status=$status state=$newState")
-                closeGatt()
+                failCapture("BLE connection state failed status=$status state=$newState")
                 return
             }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     onStatus("BLE connected; discovering services")
-                    gatt.discoverServices()
+                    if (!gatt.discoverServices()) failCapture("BLE service discovery could not start")
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    onStatus("BLE disconnected")
-                    closeGatt()
+                    failCapture("BLE disconnected")
                 }
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (lifecycle.isClosed) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                onStatus("BLE service discovery failed status=$status")
+                failCapture("BLE service discovery failed status=$status")
                 return
-            }
-            if (Build.VERSION.SDK_INT >= 21) {
-                gatt.requestMtu(517)
             }
 
             val service = gatt.getService(STEAM_CONTROLLER_SERVICE)
             if (service == null) {
-                onStatus("Valve BLE service not found; services=${gatt.services.joinToString { it.uuid.toString() }}")
+                failCapture("Valve BLE service not found; services=${gatt.services.joinToString { it.uuid.toString() }}")
                 return
             }
             service.characteristics.forEach { characteristic ->
@@ -182,7 +180,7 @@ class BleTritonTransport(
             val input = service.getCharacteristic(TRITON_TIMESTAMP_INPUT_CHARACTERISTIC)
                 ?: service.getCharacteristic(TRITON_INPUT_CHARACTERISTIC)
             if (input == null) {
-                onStatus("Triton BLE state characteristic not found")
+                failCapture("Triton BLE state characteristic not found")
                 return
             }
             reportCharacteristic = service.getCharacteristic(REPORT_CHARACTERISTIC)
@@ -191,25 +189,27 @@ class BleTritonTransport(
                 val reportId = reportIdFromCharacteristic(characteristic.uuid)
                 if (reportId != null && reportId >= 0x80) outputReportCharacteristics[reportId] = characteristic
             }
-            pendingNotificationCharacteristics.clear()
-            pendingNotificationCharacteristics.add(input)
+            inputCharacteristic = input
             onStatus("Valve BLE state characteristic ${input.uuid}; enabling notifications")
-            enableNextNotification(gatt)
-        }
-
-        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (descriptor.uuid == CCC_DESCRIPTOR) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    enableNextNotification(gatt)
-                } else {
-                    onStatus("BLE notification descriptor write failed status=$status")
-                    enableNextNotification(gatt)
-                }
+            // GATT operations must not overlap MTU negotiation and CCC writes.
+            awaitingMtu = true
+            if (!gatt.requestMtu(517)) {
+                awaitingMtu = false
+                enableNotifications(gatt, input)
             }
         }
 
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (descriptor.uuid == CCC_DESCRIPTOR) completeNotificationSetup(status)
+        }
+
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (lifecycle.isClosed) return
             onStatus("BLE MTU changed mtu=$mtu status=$status")
+            if (awaitingMtu) {
+                awaitingMtu = false
+                inputCharacteristic?.let { enableNotifications(gatt, it) }
+            }
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
@@ -253,28 +253,27 @@ class BleTritonTransport(
         }
     }
 
-    private fun enableNextNotification(gatt: BluetoothGatt) {
-        val characteristic = pendingNotificationCharacteristics.removeFirstOrNull()
-        if (characteristic == null) {
-            onStatus("BLE notifications enabled")
-            ready = true
-            readyLatch.countDown()
-            if (enableLizardModeRefresh) startLizardModeRefresh()
+    internal fun completeNotificationSetup(status: Int) {
+        if (lifecycle.isClosed) return
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failCapture("BLE notification descriptor write failed status=$status")
             return
         }
-        enableNotifications(gatt, characteristic)
+        if (!lifecycle.markReady()) return
+        onStatus("BLE notifications enabled")
+        if (enableLizardModeRefresh) startLizardModeRefresh()
     }
 
     private fun enableNotifications(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         onStatus("Enabling BLE notifications for ${characteristic.uuid}")
         val localOk = gatt.setCharacteristicNotification(characteristic, true)
         if (!localOk) {
-            onStatus("setCharacteristicNotification returned false")
+            failCapture("setCharacteristicNotification returned false")
             return
         }
         val descriptor = characteristic.getDescriptor(CCC_DESCRIPTOR)
         if (descriptor == null) {
-            onStatus("Input characteristic has no CCC descriptor")
+            failCapture("Input characteristic has no CCC descriptor")
             return
         }
         val descriptorValue = if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
@@ -282,18 +281,19 @@ class BleTritonTransport(
         } else {
             BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
         }
-        if (Build.VERSION.SDK_INT >= 33) {
-            gatt.writeDescriptor(descriptor, descriptorValue)
+        val queued = if (Build.VERSION.SDK_INT >= 33) {
+            gatt.writeDescriptor(descriptor, descriptorValue) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             descriptor.value = descriptorValue
             @Suppress("DEPRECATION")
             gatt.writeDescriptor(descriptor)
         }
+        if (!queued) failCapture("BLE notification descriptor write could not start")
     }
 
     private fun handleNotification(characteristicUuid: UUID, value: ByteArray) {
-        if (value.isEmpty()) return
+        if (lifecycle.isClosed || value.isEmpty()) return
         val reportId = reportIdFromCharacteristic(characteristicUuid) ?: return
         notificationCount += 1
         val now = System.currentTimeMillis()
@@ -313,7 +313,7 @@ class BleTritonTransport(
     private fun startLizardModeRefresh() {
         lizardExecutor?.shutdownNow()
         lizardExecutor = Executors.newSingleThreadScheduledExecutor { Thread(it, "ble-triton-lizard-refresh") }
-        lizardExecutor?.scheduleAtFixedRate({ sendDisableLizardModeFeatureReport() }, 0, 3, TimeUnit.SECONDS)
+        lizardExecutor?.scheduleWithFixedDelay({ sendDisableLizardModeFeatureReport() }, 0, 3, TimeUnit.SECONDS)
     }
 
     private fun sendDisableLizardModeFeatureReport() {
@@ -430,10 +430,25 @@ class BleTritonTransport(
         }
     }
 
-    fun awaitReady(timeoutMs: Long): Boolean {
-        if (ready) return true
-        readyLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        return ready
+    override fun awaitReady(timeoutMs: Long): Boolean = lifecycle.awaitReady(timeoutMs)
+
+    override fun readHidReport(reportNumber: Int, reportType: Int): ByteArray? =
+        if (reportType == 0) readHidFeatureReport(reportNumber) else null
+
+    override fun writeHidReport(reportNumber: Int, reportType: Int, report: ByteArray): Boolean {
+        if (reportType != 0) return false
+        val written = writeHidFeatureReport(report)
+        // Steam expects a successful feature ACK even when a BLE write fails.
+        if (!written) onStatus("BLE feature write failed; acknowledging Steam for compatibility")
+        return true
+    }
+
+    override fun sendOutputReport(reportType: Int, report: ByteArray): Boolean = enqueueHidOutputReport(report)
+
+    private fun failCapture(reason: String) {
+        if (lifecycle.isClosed) return
+        onStatus(reason)
+        if (lifecycle.fail(reason)) close()
     }
 
     private fun writeBleFeaturePayload(payload: ByteArray, timeoutMs: Long): Boolean {
@@ -455,7 +470,7 @@ class BleTritonTransport(
             pendingWrite.set(pending)
             characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             val queued = if (Build.VERSION.SDK_INT >= 33) {
-                gatt.writeCharacteristic(characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothGatt.GATT_SUCCESS
+                gatt.writeCharacteristic(characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
                 characteristic.value = payload
@@ -510,7 +525,10 @@ class BleTritonTransport(
     }
 
     override fun close() {
-        outputClosed.set(true)
+        if (!outputClosed.compareAndSet(false, true)) return
+        lifecycle.close()
+        pendingWrite.getAndSet(null)?.complete(BluetoothGatt.GATT_FAILURE)
+        pendingRead.getAndSet(null)?.complete(BluetoothGatt.GATT_FAILURE, ByteArray(0))
         synchronized(outputQueueLock) {
             queuedOutputReports.clear()
             outputQueueLock.notifyAll()
@@ -527,9 +545,9 @@ class BleTritonTransport(
         runCatching { gatt?.close() }
         gatt = null
         reportCharacteristic = null
-        readyLatch.countDown()
+        awaitingMtu = false
         outputReportCharacteristics.clear()
-        pendingNotificationCharacteristics.clear()
+        inputCharacteristic = null
     }
 
     private fun reportIdFromCharacteristic(uuid: UUID): Int? {

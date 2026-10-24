@@ -1,43 +1,76 @@
-name: Android APK
+name: Build and test
 
 on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    - cron: '30 3 * * 1'
   workflow_dispatch:
+    inputs:
+      integration:
+        description: Run Android emulator and Linux kernel integration tests
+        type: boolean
+        default: false
 
 jobs:
-  build-debug-apk:
-    name: Build debug APK
+  android:
+    name: Android APK, lint, JVM and Zig tests
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes pipe-operators
             accept-flake-config = true
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
+      # The derivation gates packaging on lintDebug, testDebugUnitTest,
+      # testZigProtocol and testJniEnvironment, and builds the test APK too.
+      - name: Build and check APKs in the Nix sandbox
+        run: nix build .#android-apk --out-link result-apk
+      - uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Test and assemble Android APKs
-        run: nix develop .#build --accept-flake-config -c gradle --no-daemon :app:testDebugUnitTest :app:testZigProtocol :app:assembleDebug :app:assembleDebugAndroidTest
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: steamlesslink-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: steamlesslink-debug-apks
+          path: result-apk/*.apk
           if-no-files-found: error
+      - name: Enable KVM on the disposable runner
+        if: github.event_name == 'schedule' || inputs.integration == true
+        run: sudo chmod 666 /dev/kvm
+      - name: Run instrumentation and raw, generic, extended and Iroh emulator tests
+        if: github.event_name == 'schedule' || inputs.integration == true
+        run: |
+          nix run .#android-emulator-link-test
+          STEAMLESS_ANDROID_TEST_MODE=uhid-generic-gamepad nix run .#android-emulator-link-test
+          STEAMLESS_ANDROID_TEST_MODE=uhid-extended-gamepad nix run .#android-emulator-link-test
+          nix run .#android-emulator-iroh-test
+
+  linux:
+    name: Linux packages and Iroh round trip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes pipe-operators
+            accept-flake-config = true
+      - run: nix build .#steamless-link-host .#steamless-link-controller .#checks.x86_64-linux.iroh-proxy-roundtrip
+
+  kernel-integration:
+    name: Linux UHID, controller capture and uinput tests
+    if: github.event_name == 'schedule' || inputs.integration == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM on the disposable runner
+        run: sudo chmod 666 /dev/kvm
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes pipe-operators
+            accept-flake-config = true
+            system-features = nixos-test benchmark big-parallel kvm
+      - run: |
+          nix build .#checks.x86_64-linux.steamless-link-host-nixos \
+            .#checks.x86_64-linux.steamless-link-controller-nixos \
+            .#checks.x86_64-linux.steamless-uinput-gamepad-nixos

@@ -10,9 +10,8 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
-class LocalUinputXbox360Output private constructor(
+class LocalUinputXbox360Output internal constructor(
     private val process: Process,
-    private val onStatus: (String) -> Unit,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private val output = process.outputStream.buffered()
@@ -20,15 +19,16 @@ class LocalUinputXbox360Output private constructor(
     @Synchronized
     fun sendPacket(packet: ByteArray) {
         check(packet.size == Xbox360Protocol.PACKET_SIZE) { "expected ${Xbox360Protocol.PACKET_SIZE}-byte Xbox packet" }
-        if (closed.get()) return
+        check(!closed.get()) { "Local uinput output is closed" }
         output.write(packet)
         output.flush()
     }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        runCatching { output.close() }
+        // Terminate the reader before closing a pipe whose writer can be blocked.
         runCatching { process.destroy() }
+        runCatching { output.close() }
     }
 
     companion object {
@@ -38,7 +38,7 @@ class LocalUinputXbox360Output private constructor(
             val helper = extractHelper(context)
             val process = startWithShizuku(helper, onStatus) ?: startWithSu(helper, onStatus)
             drainProcessLogs(process, onStatus)
-            return LocalUinputXbox360Output(process, onStatus)
+            return LocalUinputXbox360Output(process)
         }
 
         private fun extractHelper(context: Context): File {

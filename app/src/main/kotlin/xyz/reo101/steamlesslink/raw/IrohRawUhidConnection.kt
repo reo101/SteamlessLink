@@ -25,13 +25,13 @@ fun irohRawUhidConnection(
         val addr = EndpointTicket.fromString(ticket.trim()).endpointAddr()
         onStatus("Iroh ticket relay=${addr.relayUrl()} direct=${addr.directAddresses().joinToString().ifBlank { "none" }}")
         val conn = runBlocking { withTimeout(connectTimeoutMs) { endpoint.connect(addr, ALPN) } }
+        closeConnection = { conn.close(0, "bye".toByteArray()) }
         onStatus("Iroh connected to ${conn.remoteId()}")
         conn.logPaths(onStatus)
         val bi = runBlocking { withTimeout(connectTimeoutMs) { conn.openBi() } }
         conn.logPaths(onStatus)
         val recv = bi.recv()
         val send = bi.send()
-        closeConnection = { conn.close(0, "bye".toByteArray()) }
         return RawUhidConnection(
             input = object : InputStream() {
                 override fun read(): Int {
@@ -57,13 +57,13 @@ fun irohRawUhidConnection(
                 }
             },
         ) {
-            runCatching { runBlocking { send.finish() } }
-            closeConnection?.invoke()
-            runCatching { runBlocking { endpoint.shutdown() } }
+            // Closing the connection first interrupts blocked stream reads/writes.
+            runCatching { closeConnection?.invoke() }
+            runCatching { runBlocking { withTimeout(connectTimeoutMs) { endpoint.shutdown() } } }
         }
     } catch (error: Throwable) {
-        closeConnection?.invoke()
-        runCatching { runBlocking { endpoint.shutdown() } }
+        runCatching { closeConnection?.invoke() }
+        runCatching { runBlocking { withTimeout(connectTimeoutMs) { endpoint.shutdown() } } }
         throw error
     }
 }

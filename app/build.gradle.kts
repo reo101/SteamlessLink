@@ -1,196 +1,147 @@
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.OutputDirectory
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-val zigJniLibsDir = layout.buildDirectory.dir("generated/zig/jniLibs")
+abstract class GeneratedDirectoryTask : Exec() {
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+}
+
 val zigVersion = providers.exec { commandLine("zig", "version") }.standardOutput.asText.map(String::trim)
-val uinputHelperAssetsDir = layout.buildDirectory.dir("generated/uinput/assets")
+val zigPackages = providers.environmentVariable("STEAMLESS_ZIG_PACKAGES")
+val zigDependencyArguments = zigPackages.orNull?.let { listOf("--system", it) }.orEmpty()
+val packageZigNative = providers.gradleProperty("steamless.buildZig").map(String::toBoolean).orElse(true)
+val packageUinputHelper = providers.gradleProperty("steamless.buildUinputHelper").map(String::toBoolean).orElse(true)
 val irohJniLibsDir = providers.gradleProperty("steamless.irohJniLibs")
     .orElse(providers.environmentVariable("STEAMLESS_IROH_JNI_LIBS"))
     .orElse(providers.environmentVariable("IROH_JNI").map { "$it/jniLibs" })
-val packageZigNative = providers.gradleProperty("steamless.buildZig")
-    .map { it.toBoolean() }
-    .orElse(true)
-val packageUinputHelper = providers.gradleProperty("steamless.buildUinputHelper")
-    .map { it.toBoolean() }
-    .orElse(true)
-val zigSources = fileTree(rootProject.file("native/src")) {
-    include("**/*.zig")
-}
-val zigCoreSources = fileTree(rootProject.file("core/src")) {
-    include("**/*.zig")
-}
-val zigCoreRoot = rootProject.file("core/src/root.zig")
-val protocolGenerator = rootProject.file("core/src/generate_kotlin_protocol.zig")
-val generatedProtocolDir = layout.buildDirectory.dir("generated/source/protocol/main")
-val generatedProtocolFile = generatedProtocolDir.map {
-    it.file("xyz/reo101/steamlesslink/protocol/ProtocolConstants.kt")
-}
-val zigAndroidTargets = listOf(
-    "arm64-v8a" to "aarch64-linux-android",
-    "x86_64" to "x86_64-linux-android",
-)
-val uinputHelperTargets = listOf(
-    "arm64-v8a" to "aarch64-linux-android",
-    "x86_64" to "x86_64-linux-android",
-)
+val zigSources = fileTree(rootProject.file("native/src")) { include("**/*.zig") }
+val zigCoreSources = fileTree(rootProject.file("core/src")) { include("**/*.zig") }
+val zigBuildFiles = rootProject.files("native/build.zig", "native/build.zig.zon", "core/build.zig", "core/build.zig.zon")
+val androidTargets = listOf("arm64-v8a" to "aarch64-linux-android", "x86_64" to "x86_64-linux-android")
 
 android {
     namespace = "xyz.reo101.steamlesslink"
     compileSdk = 35
-
     defaultConfig {
         applicationId = "xyz.reo101.steamlesslink"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-
+    // Public test key. Never use it for a release or trust it as an identity.
+    signingConfigs.getByName("debug") {
+        storeFile = file("debug.keystore")
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
-    sourceSets["main"].java.srcDir(generatedProtocolDir)
-    if (packageZigNative.get()) {
-        sourceSets["main"].jniLibs.srcDir(zigJniLibsDir)
-    }
-    if (packageUinputHelper.get()) {
-        sourceSets["main"].assets.srcDir(uinputHelperAssetsDir)
-    }
     irohJniLibsDir.orNull?.let { sourceSets["main"].jniLibs.srcDir(file(it)) }
-
     packaging {
         jniLibs.keepDebugSymbols += listOf("**/libsteamless_protocol.so", "**/libiroh_ffi.so")
         resources.excludes += listOf("darwin-aarch64/**", "win32-x86-64/**")
     }
 }
+kotlin.compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
 
-val generateProtocolConstants = tasks.register<Exec>("generateProtocolConstants") {
-    inputs.files(zigCoreSources, protocolGenerator)
-    outputs.file(generatedProtocolFile)
+val generateProtocolConstants = tasks.register("generateProtocolConstants")
+val buildZigNative = tasks.register("buildZigNative")
+val buildUinputHelper = tasks.register("buildUinputHelper")
 
-    doFirst {
-        generatedProtocolFile.get().asFile.parentFile.mkdirs()
-    }
-
-    commandLine(
-        "zig",
-        "run",
-        protocolGenerator.absolutePath,
-        "--",
-        generatedProtocolFile.get().asFile.absolutePath,
-    )
-}
-
-val zigNativeTasks = zigAndroidTargets.map { (abi, target) ->
-    val targetName = abi.split('-', '_')
-        .joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) }
-    val outputDir = zigJniLibsDir.map { it.dir(abi) }
-    val outputFile = outputDir.map { it.file("libsteamless_protocol.so") }
-
-    tasks.register<Exec>("buildZig$targetName") {
-        inputs.files(zigSources, zigCoreSources, rootProject.files(
-            "native/build.zig", "native/build.zig.zon", "core/build.zig", "core/build.zig.zon",
-        ))
+// AGP assigns each generated directory and carries its producer into lint and packaging.
+androidComponents.onVariants { variant ->
+    val variantName = variant.name.replaceFirstChar(Char::uppercaseChar)
+    val protocol = tasks.register<GeneratedDirectoryTask>("generate${variantName}ProtocolConstants") {
+        inputs.files(zigCoreSources, zigBuildFiles)
         inputs.property("zigVersion", zigVersion)
-        inputs.property("zigTarget", target)
-        inputs.property("zigOptimize", "ReleaseSafe")
-        inputs.property("zigStrip", true)
-        outputs.file(outputFile)
-        workingDir(rootProject.file("native"))
-        commandLine(
-            "zig", "build",
-            "-Dtarget=$target", "-Doptimize=ReleaseSafe", "-Dstrip=true",
-            "--prefix", outputDir.get().asFile.absolutePath,
-            "--prefix-lib-dir", ".",
-            "--cache-dir", layout.buildDirectory.dir("generated/zig/cache/$abi").get().asFile.absolutePath,
-        )
-    }
-}
-
-val buildZigNative = tasks.register("buildZigNative") {
-    dependsOn(zigNativeTasks)
-}
-
-val uinputHelperTasks = uinputHelperTargets.map { (abi, target) ->
-    val taskName = "buildUinputHelper" + abi
-        .split('-', '_')
-        .joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) }
-    val outputFile = uinputHelperAssetsDir.map { it.file("uinput/$abi/steamless-uinput-gamepad") }
-
-    tasks.register<Exec>(taskName) {
-        inputs.file(rootProject.file("native/src/uinput_gamepad.zig"))
-        inputs.property("zigTarget", target)
-        inputs.property("zigOptimize", "ReleaseSafe")
-        inputs.property("zigStrip", true)
-        outputs.file(outputFile)
-
+        workingDir(rootProject.file("core"))
         doFirst {
-            outputFile.get().asFile.parentFile.mkdirs()
+            val output = outputDirectory.file("xyz/reo101/steamlesslink/protocol/ProtocolConstants.kt").get().asFile
+            output.parentFile.mkdirs()
+            commandLine("zig", "build", "generate-kotlin", "-j4", "-Doptimize=ReleaseSafe",
+                "-Dkotlin-output=${output.absolutePath}",
+                "--cache-dir", layout.buildDirectory.dir("generated/protocol/cache").get().asFile.absolutePath)
         }
-
-        commandLine(
-            "zig",
-            "build-exe",
-            "-target",
-            target,
-            "-O",
-            "ReleaseSafe",
-            "-fstrip",
-            "-femit-bin=${outputFile.get().asFile.absolutePath}",
-            rootProject.file("native/src/uinput_gamepad.zig").absolutePath,
-        )
     }
-}
+    variant.sources.java?.addGeneratedSourceDirectory(protocol) { it.outputDirectory }
+    generateProtocolConstants.configure { dependsOn(protocol) }
 
-val buildUinputHelper = tasks.register("buildUinputHelper") {
-    dependsOn(uinputHelperTasks)
+    for ((abi, target) in androidTargets) {
+        val suffix = abi.split('-', '_').joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
+        if (packageZigNative.get()) {
+            val library = tasks.register<GeneratedDirectoryTask>("build${variantName}Zig$suffix") {
+                inputs.files(zigSources, zigCoreSources, zigBuildFiles)
+                inputs.property("zigVersion", zigVersion)
+                inputs.property("zigTarget", target)
+                inputs.property("zigOptimize", "ReleaseSafe")
+                inputs.property("zigStrip", true)
+                zigPackages.orNull?.let { inputs.dir(it) }
+                workingDir(rootProject.file("native"))
+                doFirst {
+                    commandLine(listOf("zig", "build", "-j4", "-Dtarget=$target", "-Doptimize=ReleaseSafe", "-Dstrip=true",
+                        "--prefix", outputDirectory.dir(abi).get().asFile.absolutePath, "--prefix-lib-dir", ".",
+                        "--cache-dir", layout.buildDirectory.dir("generated/zig/cache/$abi").get().asFile.absolutePath,
+                    ) + zigDependencyArguments)
+                }
+            }
+            variant.sources.jniLibs?.addGeneratedSourceDirectory(library) { it.outputDirectory }
+            buildZigNative.configure { dependsOn(library) }
+        }
+        if (packageUinputHelper.get()) {
+            val helper = tasks.register<GeneratedDirectoryTask>("build${variantName}UinputHelper$suffix") {
+                inputs.files(zigSources, zigCoreSources, zigBuildFiles)
+                inputs.property("zigVersion", zigVersion)
+                inputs.property("zigTarget", target)
+                inputs.property("zigOptimize", "ReleaseSafe")
+                inputs.property("zigStrip", true)
+                zigPackages.orNull?.let { inputs.dir(it) }
+                workingDir(rootProject.file("native"))
+                doFirst {
+                    commandLine(listOf("zig", "build", "uinput", "-j4", "-Dtarget=$target", "-Doptimize=ReleaseSafe", "-Dstrip=true",
+                        "--prefix", outputDirectory.dir("uinput/$abi").get().asFile.absolutePath, "--prefix-exe-dir", ".",
+                        "--cache-dir", layout.buildDirectory.dir("generated/zig/cache/$abi").get().asFile.absolutePath,
+                    ) + zigDependencyArguments)
+                }
+            }
+            variant.sources.assets?.addGeneratedSourceDirectory(helper) { it.outputDirectory }
+            buildUinputHelper.configure { dependsOn(helper) }
+        }
+    }
 }
 
 tasks.register<Exec>("testZigProtocol") {
-    inputs.files(zigCoreSources)
-    commandLine("zig", "test", zigCoreRoot.absolutePath)
+    inputs.files(zigCoreSources, zigBuildFiles)
+    inputs.property("zigVersion", zigVersion)
+    workingDir(rootProject.file("core"))
+    commandLine("zig", "build", "test", "-j4", "-Doptimize=ReleaseSafe")
 }
-
-tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }.configureEach {
-    dependsOn(generateProtocolConstants)
+tasks.register<Exec>("testJniEnvironment") {
+    inputs.files(zigSources, zigCoreSources, zigBuildFiles)
+    inputs.property("zigVersion", zigVersion)
+    zigPackages.orNull?.let { inputs.dir(it) }
+    workingDir(rootProject.file("native"))
+    commandLine(listOf("zig", "build", "test", "-j4", "-Doptimize=ReleaseSafe") + zigDependencyArguments)
 }
-
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
-    if (packageZigNative.get()) dependsOn(buildZigNative)
-}
-
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-    if (packageUinputHelper.get()) dependsOn(buildUinputHelper)
-}
-
-tasks.named("check") {
-    if (packageZigNative.get()) dependsOn("testZigProtocol")
-}
+tasks.named("check") { if (packageZigNative.get()) dependsOn("testZigProtocol", "testJniEnvironment") }
 
 dependencies {
-    implementation("computer.iroh:iroh:1.2.0") {
-        exclude(group = "net.java.dev.jna", module = "jna")
-    }
+    implementation("computer.iroh:iroh:1.2.0") { exclude(group = "net.java.dev.jna", module = "jna") }
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("dev.rikka.shizuku:api:13.1.5")

@@ -10,6 +10,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const generator = b.addExecutable(.{
+        .name = "generate-kotlin-protocol",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/generate_kotlin_protocol.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const generate = b.addRunArtifact(generator);
+    generate.addArg(b.option([]const u8, "kotlin-output", "Kotlin protocol output file") orelse "zig-out/ProtocolConstants.kt");
+    b.step("generate-kotlin", "Generate Kotlin protocol constants and descriptors").dependOn(&generate.step);
+
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,

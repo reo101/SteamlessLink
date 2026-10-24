@@ -1,6 +1,7 @@
 package xyz.reo101.steamlesslink.raw
 
 import xyz.reo101.steamlesslink.protocol.RawProtocol
+import xyz.reo101.steamlesslink.protocol.encodeDeviceInfo
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -23,6 +24,19 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class UhidRawClientTest {
+    @Test fun connectionsCloseExactlyOnceAndAbortedConnectsDisposeTheirSocket() {
+        var closes = 0
+        val connection = RawUhidConnection(ByteArrayInputStream(ByteArray(0)), ByteArrayOutputStream()) { closes++ }
+        connection.close()
+        connection.close()
+        assertEquals(1, closes)
+        var pending: java.net.Socket? = null
+        assertThrows(IOException::class.java) {
+            RawUhidConnection.tcp("127.0.0.1", 1, onSocket = { socket -> pending = socket; throw IOException("Stopped") })
+        }
+        assertTrue(pending!!.isClosed)
+    }
+
     @Test
     fun fetchesIrohTicketFromRawHost() {
         val server = ServerSocket(0)

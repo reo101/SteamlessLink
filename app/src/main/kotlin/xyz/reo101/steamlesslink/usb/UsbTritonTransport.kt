@@ -12,11 +12,12 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
-import java.io.Closeable
-import java.util.concurrent.CountDownLatch
+import xyz.reo101.steamlesslink.triton.CaptureLifecycle
+import xyz.reo101.steamlesslink.triton.TritonTransport
 import java.util.concurrent.Executors
 import xyz.reo101.steamlesslink.protocol.ExtendedGamepadProtocol
 import xyz.reo101.steamlesslink.protocol.RawProtocol
+import xyz.reo101.steamlesslink.protocol.encodeDeviceInfo
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,13 +28,13 @@ class UsbTritonTransport(
     private val onStatus: (String) -> Unit,
     private val enableImu: Boolean = false,
     private val enableLizardModeRefresh: Boolean = true,
-) : Closeable {
+    private val onFailure: (String) -> Unit = {},
+) : TritonTransport {
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val running = AtomicBoolean(false)
-    private val readyLatch = CountDownLatch(1)
+    private val lifecycle = CaptureLifecycle(onFailure)
     private val reportIoLock = Object()
-    @Volatile private var ready = false
-    @Volatile internal var deviceInfo: ByteArray? = null
+    @Volatile override var deviceInfo: ByteArray? = null
         private set
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "usb-triton-reader") }
     private var lizardExecutor: ScheduledExecutorService? = null
@@ -43,11 +44,11 @@ class UsbTritonTransport(
     private var outputEndpoint: UsbEndpoint? = null
     private var permissionReceiver: BroadcastReceiver? = null
 
-    fun start() {
+    override fun start() {
+        if (lifecycle.isClosed) return
         val device = findCandidateDevice()
         if (device == null) {
-            onStatus("No supported Steam Controller USB device found")
-            readyLatch.countDown()
+            failCapture("No supported Steam Controller USB device found")
             return
         }
 
@@ -70,7 +71,7 @@ class UsbTritonTransport(
         unregisterPermissionReceiver()
         permissionReceiver = object : BroadcastReceiver() {
             override fun onReceive(receiverContext: Context, intent: Intent) {
-                if (intent.action != action) return
+                if (lifecycle.isClosed || intent.action != action) return
                 val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                 val permittedDevice = if (Build.VERSION.SDK_INT >= 33) {
                     intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -83,8 +84,7 @@ class UsbTritonTransport(
                     onStatus("USB permission granted")
                     open(permittedDevice)
                 } else {
-                    onStatus("USB permission denied or unsupported device")
-                    readyLatch.countDown()
+                    failCapture("USB permission denied or unsupported device")
                 }
             }
         }
@@ -100,28 +100,26 @@ class UsbTritonTransport(
         usbManager.requestPermission(device, intent)
     }
 
-    private fun open(device: UsbDevice) {
+    private fun open(device: UsbDevice) = synchronized(reportIoLock) {
+        if (lifecycle.isClosed) return
         closeConnectionOnly()
         val openedConnection = usbManager.openDevice(device)
         if (openedConnection == null) {
-            onStatus("Failed to open ${device.deviceName}")
-            readyLatch.countDown()
+            failCapture("Failed to open ${device.deviceName}")
             return
         }
 
         val ifaceAndEndpoint = findHidInput(device)
         if (ifaceAndEndpoint == null) {
             openedConnection.close()
-            onStatus("No HID input endpoint on ${device.deviceName}")
-            readyLatch.countDown()
+            failCapture("No HID input endpoint on ${device.deviceName}")
             return
         }
 
         val (usbInterface, endpoint) = ifaceAndEndpoint
         if (!openedConnection.claimInterface(usbInterface, true)) {
             openedConnection.close()
-            onStatus("Failed to claim HID interface ${usbInterface.id}")
-            readyLatch.countDown()
+            failCapture("Failed to claim HID interface ${usbInterface.id}")
             return
         }
 
@@ -133,8 +131,7 @@ class UsbTritonTransport(
         if (descriptorLength <= 0) {
             openedConnection.releaseInterface(usbInterface)
             openedConnection.close()
-            onStatus("Failed to read USB HID report descriptor ($descriptorLength)")
-            readyLatch.countDown()
+            failCapture("Failed to read USB HID report descriptor ($descriptorLength)")
             return
         }
         deviceInfo = RawProtocol.encodeDeviceInfo(
@@ -181,14 +178,12 @@ class UsbTritonTransport(
             while (running.get()) {
                 val read = openedConnection.bulkTransfer(endpoint, buffer, buffer.size, 1000)
                 if (read > 0) {
-                    ready = true
-                    readyLatch.countDown()
+                    if (!running.get() || lifecycle.isClosed) return@execute
+                    lifecycle.markReady()
                     onReport(buffer.copyOf(read), read)
                 } else if (read < 0) {
-                    if (running.get()) onStatus("USB read failed ($read); stopping")
+                    if (running.get()) failCapture("USB read failed ($read); stopping")
                     running.set(false)
-                    ready = false
-                    readyLatch.countDown()
                 }
             }
         }
@@ -197,7 +192,7 @@ class UsbTritonTransport(
     private fun startLizardModeRefresh(openedConnection: UsbDeviceConnection, usbInterface: UsbInterface) {
         lizardExecutor?.shutdownNow()
         lizardExecutor = Executors.newSingleThreadScheduledExecutor { Thread(it, "triton-lizard-refresh") }
-        lizardExecutor?.scheduleAtFixedRate({
+        lizardExecutor?.scheduleWithFixedDelay({
             val sent = disableLizardMode(openedConnection, usbInterface.id)
             if (!sent) onStatus("Failed to refresh lizard-mode setting")
         }, 0, 3, TimeUnit.SECONDS)
@@ -223,12 +218,15 @@ class UsbTritonTransport(
         sent == report.size
     }
 
-    fun awaitReady(timeoutMs: Long): Boolean {
-        readyLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        return ready && running.get()
+    override fun awaitReady(timeoutMs: Long): Boolean = lifecycle.awaitReady(timeoutMs) && running.get()
+
+    private fun failCapture(reason: String) {
+        if (lifecycle.isClosed) return
+        onStatus(reason)
+        if (lifecycle.fail(reason)) close()
     }
 
-    fun readHidReport(reportNumber: Int, reportType: Int): ByteArray? = synchronized(reportIoLock) {
+    override fun readHidReport(reportNumber: Int, reportType: Int): ByteArray? = synchronized(reportIoLock) {
         val value = hidReportValue(reportNumber, reportType) ?: return@synchronized null
         val conn = connection ?: return@synchronized null
         val iface = claimedInterface ?: return@synchronized null
@@ -238,7 +236,7 @@ class UsbTritonTransport(
         if (read > 0) report.copyOf(read) else null
     }
 
-    fun writeHidReport(reportNumber: Int, reportType: Int, report: ByteArray): Boolean = synchronized(reportIoLock) {
+    override fun writeHidReport(reportNumber: Int, reportType: Int, report: ByteArray): Boolean = synchronized(reportIoLock) {
         val value = hidReportValue(reportNumber, reportType) ?: return@synchronized false
         if (reportType == 2 || report.isEmpty() || report.size > 65 ||
             (report[0].toInt() and 0xff) != reportNumber
@@ -257,9 +255,8 @@ class UsbTritonTransport(
     }
 
     override fun close() {
+        lifecycle.close()
         running.set(false)
-        ready = false
-        readyLatch.countDown()
         lizardExecutor?.shutdownNow()
         executor.shutdownNow()
         unregisterPermissionReceiver()

@@ -68,10 +68,10 @@ pub const Sensor = struct {
     pub const POWER_OFFSET = byteOffset(SensorFeature, "power");
     pub const INTERVAL_OFFSET = byteOffset(SensorFeature, "interval_ms");
     pub const FEATURE_SIZE = wireSize(SensorFeature);
-    pub const NO_EVENTS = @intFromEnum(ReportingState.no_events);
-    pub const ALL_EVENTS = @intFromEnum(ReportingState.all_events);
-    pub const FULL_POWER = @intFromEnum(PowerState.full);
-    pub const POWER_OFF = @intFromEnum(PowerState.off);
+    pub const NO_EVENTS = @backingInt(ReportingState.no_events);
+    pub const ALL_EVENTS = @backingInt(ReportingState.all_events);
+    pub const FULL_POWER = @backingInt(PowerState.full);
+    pub const POWER_OFF = @backingInt(PowerState.off);
     pub const INTERVAL_MS = (SensorFeature{ .id = FIRST_REPORT_ID }).interval_ms;
 };
 // Packed JNI result only, split into five ordinary HID reports before transmission.
@@ -172,9 +172,9 @@ pub const DESCRIPTORS = [_][]const u8{ &GAMEPAD_DESCRIPTOR, &PAD_DESCRIPTOR, &PA
 // Extra HID buttons 16..30. Bits sourced from SDL_hidapi_steam_triton.c.
 // QAM,L4,R4,L5,R5,pad clicks,trigger clicks,stick touch,pad touch,grip touch.
 const EXTRA_BUTTONS = [_]u32{
-    0x10,       0x20000,  0x80,      0x40000,  0x100,     0x4000000, 0x400000,
-    0x8000000,  0x800000, 0x1000000, 0x100000, 0x2000000, 0x200000,  0x20000000,
-    0x10000000,
+    triton.Buttons.QAM,                  triton.Buttons.L4,                   triton.Buttons.R4,                   triton.Buttons.L5,                  triton.Buttons.R5,
+    triton.Buttons.LEFT_TOUCHPAD_CLICK,  triton.Buttons.RIGHT_TOUCHPAD_CLICK, triton.Buttons.LEFT_TRIGGER_CLICK,   triton.Buttons.RIGHT_TRIGGER_CLICK, triton.Buttons.LEFT_JOYSTICK_TOUCH,
+    triton.Buttons.RIGHT_JOYSTICK_TOUCH, triton.Buttons.LEFT_TOUCHPAD_TOUCH,  triton.Buttons.RIGHT_TOUCHPAD_TOUCH, triton.Buttons.LEFT_GRIP_TOUCH,     triton.Buttons.RIGHT_GRIP_TOUCH,
 };
 
 pub fn mapTritonToInput(report: []const u8, out: []u8) triton.Error!void {
@@ -201,7 +201,7 @@ pub fn mapTritonToInput(report: []const u8, out: []u8) triton.Error!void {
     // Triton Y points up; HID gamepad/touchpad Y points down.
     for (pads, 0..) |pad, index| {
         const offset = GAMEPAD_SIZE + index * PAD_SIZE;
-        const touching = state.buttons & (if (index == 0) @as(u32, 0x2000000) else 0x200000) != 0;
+        const touching = state.buttons & (if (index == 0) triton.Buttons.LEFT_TOUCHPAD_TOUCH else triton.Buttons.RIGHT_TOUCHPAD_TOUCH) != 0;
         encode(PadReport, .{
             .touching = touching,
             .x = @intCast(@as(i32, pad.x) + 32768),

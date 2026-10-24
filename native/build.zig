@@ -36,6 +36,18 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(library);
 
+    const helper = b.addExecutable(.{
+        .name = "steamless-uinput-gamepad",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/uinput_gamepad.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = strip,
+        }),
+    });
+    const install_helper = b.addInstallArtifact(helper, .{});
+    b.step("uinput", "Build and install the local uinput helper").dependOn(&install_helper.step);
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/jni_environment.zig"),

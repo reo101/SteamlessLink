@@ -21,17 +21,40 @@ The Steamless Link path preserves the controller as a Valve/Steam Controller dev
 ## Build / install Android app
 
 ```sh
-nix develop -c gradle :app:testDebugUnitTest
+nix build .#android-apk
+adb install result/app-debug.apk
+```
+
+The Nix derivation builds both Android ABIs and runs Android lint, JVM tests,
+core Zig tests, and JNI adapter tests. It installs `app-debug.apk` and
+`app-debug-androidTest.apk` in its output. Gradle dependencies have content
+hashes in `nix/gradle-dependencies.json`. Zig dependencies come from the fixed-output
+`native-dependencies` package. The APK build does not fetch dependencies.
+
+Debug APKs use the public test key in `app/debug.keystore` (password `android`).
+Do not use this key for releases or authentication. If an installed APK uses
+a different debug key, Android rejects an update. Uninstalling that APK deletes
+its app data. This change does not uninstall anything automatically.
+
+For incremental development and installation, use:
+
+```sh
+nix develop -c gradle :app:check
 nix develop -c gradle :app:installDebug
 ```
 
-CI uses `nix develop .#build -c gradle ...`, a build-only shell without
-language servers or developer diagnostics. The default shell extends it with
-those tools; both share the SDK, Zig, Gradle, and JNI configuration.
+CI builds `.#android-apk` in the Nix sandbox. Weekly and opt-in integration jobs
+run the emulator instrumentation suite, all remote profiles, Iroh, and Linux
+kernel tests. Physical USB and privileged Android tests remain opt-in.
+`devShells.build` omits language servers and developer diagnostics. The default
+shell extends it with those tools; both share the SDK, Zig, Gradle, and JNI configuration.
 The flake uses Zig 0.17.0 for Android and Linux builds, with ZLS 0.17.0 in the
 default shell. The Iroh proxy uses Rust Iroh 1.4.1. Android uses Kotlin/FFI
 1.2.0, whose native dependency is also Iroh 1.4.1. The Android initializer is
-vendored from that release. Nix still builds both native Android libraries.
+vendored from that release. Nix builds the Iroh JNI library for both Android
+ABIs. Gradle delegates the protocol JNI library and uinput helper to Zig build
+steps. Generated source APIs connect their outputs to Android compilation,
+lint, and packaging.
 
 `native/build.zig` builds the JNI library and generates its types and function
 table per target. `native/build.zig.zon` pins AOSP `libnativehelper`
@@ -50,7 +73,16 @@ zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseSafe -Dstrip=true
 
 The library is installed to `native/zig-out/lib/libsteamless_protocol.so`.
 If the dependencies are already fetched, use `--system zig-pkg` to disable network
-fetching. Sandboxed Nix builds must receive a prefetched package directory.
+fetching. Sandboxed Nix builds receive a prefetched package directory through
+`STEAMLESS_ZIG_PACKAGES`. To refresh Gradle dependency hashes after a dependency
+change, run the Nix-provided updater from the repository root:
+
+```sh
+$(nix build --no-link --print-out-paths .#android-apk.mitmCache.updateScript)
+```
+
+If the Zig dependency manifests change, update the fixed-output hash in
+`nix/native-dependencies.nix` too.
 
 The debug APK bundles the Zig/JNI mapper by default for `arm64-v8a` and
 `x86_64`. Both generic HID profiles and local Xbox mode report that they are unavailable
@@ -91,8 +123,8 @@ host-side emulator smoke test with:
 nix run .#android-emulator-link-test
 ```
 
-That command builds the app and test APKs, boots a headless Android emulator,
-verifies the bundled Zig mapper through instrumentation, then starts the app in
+That command uses the Nix-built app and test APKs, boots a headless Android emulator,
+runs the instrumentation suite, then starts the app in
 fake controller mode through `MainActivity` and checks raw `0x45` input frames.
 
 To exercise the generic profile's device-info frame and its 10-byte HID reports
@@ -124,8 +156,9 @@ and real Linux controller plumbing, run the optional VM integration app:
 nix run .#android-emulator-link-vm-test
 ```
 
-Both emulator commands require KVM and intentionally stay out of default flake
-checks/CI.
+Both emulator commands require KVM. CI runs them weekly or when the workflow's
+`integration` input is enabled. They stay out of default flake checks. Use
+`STEAMLESSLINK_APK` and `STEAMLESSLINK_TEST_APK` to override the APK paths.
 
 ## Android app configuration
 
@@ -147,7 +180,10 @@ wired controller's actual identity and HID descriptor, input reports, feature
 GET/SET requests, and interrupt output reports. Steam owns controller settings in
 raw modes; mapped modes refresh lizard-mode suppression locally. The bridge waits
 for USB input before opening the remote stream. After unplugging/reconnecting the
-controller, tap Start again.
+controller, tap Start again. A capture failure stops the session and closes its
+output device or remote stream. It does not reconnect capture automatically.
+Raw modes forward numbered input reports even when the diagnostic parser does
+not recognize their report ID.
 
 The opt-in USB instrumentation tests require a wired controller with permission
 already granted. Stop the bridge, install both debug APKs, then run:

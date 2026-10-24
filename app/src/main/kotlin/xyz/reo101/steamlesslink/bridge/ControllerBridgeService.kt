@@ -7,536 +7,313 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
-import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
+import java.io.Closeable
+import java.io.IOException
+import java.net.Socket
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import xyz.reo101.steamlesslink.R
 import xyz.reo101.steamlesslink.ble.BleTritonTransport
-import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
 import xyz.reo101.steamlesslink.local.LocalMappingSettings
-import xyz.reo101.steamlesslink.testing.ControllerTestFeed
+import xyz.reo101.steamlesslink.local.LocalUinputXbox360Output
 import xyz.reo101.steamlesslink.protocol.ExtendedGamepadSession
 import xyz.reo101.steamlesslink.protocol.GenericGamepadProtocol
 import xyz.reo101.steamlesslink.protocol.NativeProtocol
 import xyz.reo101.steamlesslink.protocol.RawProtocol
+import xyz.reo101.steamlesslink.protocol.encodeDeviceInfo
 import xyz.reo101.steamlesslink.protocol.Xbox360Protocol
+import xyz.reo101.steamlesslink.raw.RawUhidConnection
 import xyz.reo101.steamlesslink.raw.UhidRawClient
 import xyz.reo101.steamlesslink.raw.irohRawUhidConnection
+import xyz.reo101.steamlesslink.testing.ControllerTestFeed
 import xyz.reo101.steamlesslink.triton.FakeTritonTransport
 import xyz.reo101.steamlesslink.triton.TritonReportParser
+import xyz.reo101.steamlesslink.triton.TritonTransport
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
-import java.io.Closeable
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 class ControllerBridgeService : Service() {
-    private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "controller-bridge") }
-    private val rawClientRef = AtomicReference<UhidRawClient?>(null)
-    private val rawModeRef = AtomicReference<String?>(null)
-    private val extendedSessionRef = AtomicReference<ExtendedGamepadSession?>(null)
-    private val localUinputRef = AtomicReference<LocalUinputXbox360Output?>(null)
-    private val bridgeGeneration = AtomicLong(0)
-    private var tritonTransport: Closeable? = null
-    private val closeables: MutableList<Closeable> = mutableListOf()
-    private var lastReportStatusAtMs = 0L
-    private var reportCount = 0L
-    private var lastDroppedStatusAtMs = 0L
-    private var processBoundToNetwork = false
-    @Volatile private var localMapping = LocalMappingSettings()
-    @Volatile private var captureOnly = false
+    private val worker = Executors.newSingleThreadExecutor { Thread(it, "controller-bridge") }
+    private val main = Handler(Looper.getMainLooper())
+    private val currentSession = AtomicReference<BridgeSession?>(null)
+    private var latestStartId = 0
+    private var destroyed = false
+    private var terminalFailure = false
 
     override fun onCreate() {
         super.onCreate()
-        ensureNotificationChannel()
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Controller bridge", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) },
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val host = intent?.getStringExtra(EXTRA_HOST) ?: DEFAULT_HOST
+        latestStartId = startId
+        terminalFailure = false
+        val host = intent?.getStringExtra(EXTRA_HOST).orEmpty()
         val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
         val transport = intent?.getStringExtra(EXTRA_TRANSPORT) ?: TRANSPORT_BLE
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: MODE_UHID_RAW
-        val irohTicket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
-        val target = when (mode) {
-            MODE_UHID_RAW_IROH -> "Iroh ticket"
-            MODE_LOCAL_UINPUT_XBOX360 -> "this device"
-            else -> "$host:$port"
+        val ticket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
+        startForeground(NOTIFICATION_ID, notification("Starting $transport / $mode"))
+        val invalid = when {
+            mode == MODE_UHID_RAW_IROH && ticket.isBlank() -> "Iroh endpoint ticket is required"
+            mode !in setOf(MODE_LOCAL_UINPUT_XBOX360, MODE_UHID_RAW_IROH, MODE_CAPTURE_TEST) && host.isBlank() -> "Bridge host/IP is required"
+            mode in setOf(MODE_UHID_GENERIC_GAMEPAD, MODE_UHID_EXTENDED_GAMEPAD, MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable -> "Bundled Zig protocol library failed to load"
+            else -> null
         }
-        val modeLabel = when (mode) {
-            MODE_UHID_RAW -> "Steamless Link"
-            MODE_UHID_RAW_IROH -> "Steamless Link Iroh"
-            MODE_UHID_GENERIC_GAMEPAD -> "Generic HID Gamepad"
-            MODE_UHID_EXTENDED_GAMEPAD -> "Extended Generic HID"
-            MODE_LOCAL_UINPUT_XBOX360 -> "Local Xbox (Shizuku/root)"
-            else -> mode
-        }
-        startForeground(NOTIFICATION_ID, notification("Starting $transport/$modeLabel bridge to $target"))
-        if (mode == MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
-            status("Iroh endpoint ticket is required")
+        if (invalid != null) {
+            status(invalid)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        if (host.isBlank() && mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH && mode != MODE_CAPTURE_TEST) {
-            status("Bridge host/IP is required")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        if ((mode == MODE_UHID_GENERIC_GAMEPAD || mode == MODE_UHID_EXTENDED_GAMEPAD || mode == MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable) {
-            status("$modeLabel is unavailable: bundled Zig protocol library failed to load")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        startBridge(host, port, transport, mode, irohTicket)
+        startBridge(startId, host, port, transport, mode, ticket,
+            intent?.getIntExtra(EXTRA_FAKE_FAILURE_AFTER_REPORTS, 0) ?: 0,
+            intent?.getIntExtra(EXTRA_FAKE_REPORT_ID, FakeTritonTransport.INPUT_REPORT_ID) ?: FakeTritonTransport.INPUT_REPORT_ID)
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startBridge(host: String, port: Int, transport: String, mode: String, irohTicket: String = "") {
+    private fun startBridge(startId: Int, host: String, port: Int, transport: String, mode: String, ticket: String, failureAfterReports: Int, fakeReportId: Int) {
         stopBridge()
-        val generation = bridgeGeneration.incrementAndGet()
-        localMapping = LocalMappingSettings.load(getSharedPreferences("steamlesslink", MODE_PRIVATE))
-        captureOnly = mode == MODE_CAPTURE_TEST
-        ControllerTestFeed.begin("$transport / $mode")
-        status("Starting ${transport.lowercase()} capture")
-        runCatching { startTritonCapture(transport, mode) }
-            .onFailure { error ->
-                status("Capture startup failed: ${error.message ?: error::class.java.simpleName}")
-                Log.e(TAG, "Capture startup failed", error)
-                return
-            }
-
-        worker.execute {
-            runCatching {
-                if (mode != MODE_LOCAL_UINPUT_XBOX360 && mode != MODE_UHID_RAW_IROH && mode != MODE_CAPTURE_TEST) bindProcessToWifiIfAvailable()
-                if (!isCurrentBridge(generation)) return@runCatching
-                if (!awaitCaptureReady(generation)) return@runCatching
-                if (mode == MODE_CAPTURE_TEST) {
-                    status("Capture-only tester ready; no output device or remote connection")
-                    return@runCatching
-                }
-                if (mode == MODE_UHID_RAW || mode == MODE_UHID_RAW_IROH || mode == MODE_UHID_GENERIC_GAMEPAD || mode == MODE_UHID_EXTENDED_GAMEPAD) {
-                    runRawBridge(host, port, mode, irohTicket, generation)
-                    return@runCatching
-                }
-
-                if (mode == MODE_LOCAL_UINPUT_XBOX360) {
-                    status("Starting local uinput Xbox 360 output")
-                    val local = LocalUinputXbox360Output.start(this@ControllerBridgeService, ::status)
-                    if (!isCurrentBridge(generation)) {
-                        local.close()
-                        return@runCatching
-                    }
-                    localUinputRef.set(local)
-                    synchronized(closeables) { closeables.add(local) }
-                    status("Connected to local uinput; forwarding mapped Xbox 360 reports")
-                    return@runCatching
-                }
-
-                error("Unknown bridge mode: $mode")
-            }.onFailure { error ->
-                status("Capture is running, but bridge startup failed: ${error.message ?: error::class.java.simpleName}")
-                Log.e(TAG, "Bridge startup failed", error)
-            }
+        val feedGeneration = ControllerTestFeed.begin("$transport / $mode")
+        val session = BridgeSession(startId, mode, LocalMappingSettings.load(getSharedPreferences("steamlesslink", MODE_PRIVATE)), feedGeneration) { resource ->
+            resourceCloser.execute { runCatching { resource.close() }.onFailure { Log.w(TAG, "Resource close failed", it) } }
         }
-    }
-
-    private fun runRawBridge(host: String, port: Int, mode: String, irohTicket: String, generation: Long) {
-        while (isCurrentBridge(generation)) {
-            var raw: UhidRawClient? = null
-            val extended = if (mode == MODE_UHID_EXTENDED_GAMEPAD) ExtendedGamepadSession() else null
+        currentSession.set(session)
+        status(session, "Starting ${transport.lowercase()} capture")
+        val task = worker.submit {
             try {
-                val initialDeviceInfo = when (mode) {
-                    MODE_UHID_GENERIC_GAMEPAD -> genericGamepadDeviceInfo()
-                    MODE_UHID_RAW, MODE_UHID_RAW_IROH -> (tritonTransport as? UsbTritonTransport)?.deviceInfo
-                    else -> null
+                val capture = createCapture(session, transport, failureAfterReports, fakeReportId)
+                if (!session.attach(capture)) return@submit
+                session.transport = capture
+                capture.start()
+                val timeout = if (transport == TRANSPORT_USB) USB_READY_TIMEOUT_MS else BLE_READY_TIMEOUT_MS
+                if (!capture.awaitReady(timeout)) throw IOException("$transport capture did not become ready")
+                if (!isCurrent(session)) return@submit
+                when (mode) {
+                    MODE_CAPTURE_TEST -> status(session, "Capture-only tester ready; no output device or remote connection")
+                    MODE_LOCAL_UINPUT_XBOX360 -> {
+                        val output = LocalUinputXbox360Output.start(this) { status(session, it) }
+                        if (session.attach(output)) {
+                            session.localOutput.set(output)
+                            status(session, "Connected to local uinput; forwarding mapped Xbox 360 reports")
+                        }
+                    }
+                    MODE_UHID_RAW, MODE_UHID_RAW_IROH, MODE_UHID_GENERIC_GAMEPAD, MODE_UHID_EXTENDED_GAMEPAD ->
+                        runRawBridge(session, host, port, ticket)
+                    else -> throw IOException("Unknown bridge mode: $mode")
                 }
-                raw = if (mode == MODE_UHID_RAW_IROH) {
-                    status("Connecting to Steamless Link host over Iroh")
-                    UhidRawClient(
-                        connection = irohRawUhidConnection(this, irohTicket, onStatus = ::status),
-                        onStatus = ::status,
-                        onGetReport = { _, request, number, type -> handleRawGetReport(request, number, type) },
-                        onSetReport = { _, request, number, type, data -> handleRawSetReport(request, number, type, data) },
-                        onOutputReport = { _, type, data -> handleRawOutputReport(type, data) },
-                        initialDeviceInfo = initialDeviceInfo,
-                    )
-                } else {
-                    status("Connecting to Steamless Link host at $host:$port")
-                    UhidRawClient(
-                        host = host,
-                        port = port,
-                        onStatus = ::status,
-                        onGetReport = { device, request, number, type ->
-                            if (extended != null) extended.getReport(device, number, type)
-                            else handleRawGetReport(request, number, type)
-                        },
-                        onSetReport = { device, request, number, type, data ->
-                            if (extended != null) extended.setReport(device, number, type, data)
-                            else handleRawSetReport(request, number, type, data)
-                        },
-                        onOutputReport = { _, type, data -> extended == null && handleRawOutputReport(type, data) },
-                        initialDeviceInfo = initialDeviceInfo,
-                        initialDevices = extended?.deviceInfos.orEmpty(),
-                    )
-                }
-                if (!isCurrentBridge(generation)) return
-                rawModeRef.set(mode)
-                extendedSessionRef.set(extended)
-                rawClientRef.set(raw)
-                synchronized(closeables) { closeables.add(raw) }
-                status(
-                    if (extended != null) {
-                        "Connected to Steamless Link host; forwarding gamepad, touchpads and HID sensors"
-                    } else if (mode == MODE_UHID_GENERIC_GAMEPAD) {
-                        "Connected to Steamless Link host; forwarding generic HID gamepad reports"
-                    } else {
-                        "Connected to Steamless Link host; forwarding Triton reports"
-                    },
-                )
-                while (isCurrentBridge(generation) && !raw.awaitClosed(RAW_CONNECTION_WAIT_MS)) Unit
             } catch (error: Exception) {
-                if (isCurrentBridge(generation)) {
-                    status("Steamless Link connection failed: ${error.message ?: error::class.java.simpleName}")
-                    Log.e(TAG, "Steamless Link connection failed", error)
-                }
-            } finally {
-                raw?.let { client ->
-                    rawClientRef.compareAndSet(client, null)
-                    rawModeRef.compareAndSet(mode, null)
-                    extendedSessionRef.compareAndSet(extended, null)
-                    client.close()
-                    synchronized(closeables) { closeables.remove(client) }
-                }
-            }
-            if (isCurrentBridge(generation)) {
-                status("Steamless Link stream disconnected; retrying")
-                try {
-                    Thread.sleep(RAW_RECONNECT_DELAY_MS)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return
+                if (isCurrent(session)) {
+                    Log.e(TAG, "Bridge session failed", error)
+                    failSession(session, error.message ?: error::class.java.simpleName)
                 }
             }
         }
+        // Interrupt startup waits and runBlocking calls before a successor starts.
+        session.attach(Closeable { task.cancel(true) })
     }
 
-    private fun startTritonCapture(transport: String, mode: String) {
-        val generation = bridgeGeneration.get()
+    private fun createCapture(session: BridgeSession, transport: String, failureAfterReports: Int, fakeReportId: Int): TritonTransport {
         val onReport: (ByteArray, Int) -> Unit = { report, length ->
-            if (isCurrentBridge(generation)) handleTritonReport(report, length)
+            if (isCurrent(session)) handleTritonReport(session, report, length)
         }
-        val onStatus: (String) -> Unit = { message -> if (isCurrentBridge(generation)) status(message) }
-        val enableImu = mode == MODE_UHID_EXTENDED_GAMEPAD || mode == MODE_CAPTURE_TEST ||
-            (mode == MODE_LOCAL_UINPUT_XBOX360 && localMapping.touchGyro)
-        val closeable = when (transport) {
-            TRANSPORT_USB -> UsbTritonTransport(
-                context = this,
-                enableImu = enableImu,
-                enableLizardModeRefresh = mode != MODE_UHID_RAW && mode != MODE_UHID_RAW_IROH,
-                onReport = onReport,
-                onStatus = onStatus,
-            ).also { it.start() }
-            TRANSPORT_BLE -> BleTritonTransport(
-                context = this,
-                onReport = onReport,
-                onStatus = onStatus,
-                enableLizardModeRefresh = mode != MODE_UHID_RAW && mode != MODE_UHID_RAW_IROH,
-                enableImu = enableImu,
-            ).also { it.start() }
+        val onStatus: (String) -> Unit = { status(session, it) }
+        val onFailure: (String) -> Unit = { failSession(session, it) }
+        val enableImu = session.mode == MODE_UHID_EXTENDED_GAMEPAD || session.mode == MODE_CAPTURE_TEST ||
+            (session.mode == MODE_LOCAL_UINPUT_XBOX360 && session.mapping.touchGyro)
+        val refresh = session.mode != MODE_UHID_RAW && session.mode != MODE_UHID_RAW_IROH
+        return when (transport) {
+            TRANSPORT_USB -> UsbTritonTransport(this, onReport, onStatus, enableImu, refresh, onFailure)
+            TRANSPORT_BLE -> BleTritonTransport(this, onReport, onStatus, refresh, enableImu, onFailure)
             TRANSPORT_FAKE -> {
-                check(isDebuggable()) { "Fake Triton transport is only available in debuggable builds" }
-                FakeTritonTransport(
-                    onReport = onReport,
-                    onStatus = onStatus,
-                ).also { it.start() }
+                check((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) { "Fake transport requires a debuggable build" }
+                require(fakeReportId in 0..0xff)
+                FakeTritonTransport(onReport, onStatus, onFailure = onFailure, failureAfterReports = failureAfterReports,
+                    reportFactory = { sequence -> FakeTritonTransport.makeReport(sequence).also { it[0] = fakeReportId.toByte() } })
             }
-            else -> error("Unknown transport: $transport")
+            else -> throw IOException("Unknown transport: $transport")
         }
-        tritonTransport = closeable
-        synchronized(closeables) { closeables.add(closeable) }
     }
 
-    private fun handleRawGetReport(requestId: Int, reportNumber: Int, reportType: Int): ByteArray? {
-        val transport = tritonTransport
-        val report = when (transport) {
-            is BleTritonTransport -> transport.readHidFeatureReport(reportNumber)
-            is UsbTritonTransport -> transport.readHidReport(reportNumber, reportType)
-            is FakeTritonTransport -> transport.readHidFeatureReport(reportNumber)
-            else -> {
-                status("UHID get-report id=$requestId unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
-                return null
-            }
-        }
-        if (report == null) status("HID feature read failed for UHID get-report id=$requestId rnum=0x%02x".format(reportNumber))
-        return report
-    }
-
-    private fun handleRawOutputReport(reportType: Int, data: ByteArray): Boolean {
-        val transport = tritonTransport
-        val ok = when (transport) {
-            is BleTritonTransport -> transport.enqueueHidOutputReport(data)
-            is UsbTritonTransport -> data.isNotEmpty() && transport.writeHidReport(data[0].toInt() and 0xff, reportType, data)
-            is FakeTritonTransport -> transport.enqueueHidOutputReport(data)
-            else -> {
-                status("UHID output-report unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
-                return false
-            }
-        }
-        if (!ok) status("HID output enqueue failed for UHID output-report rtype=$reportType len=${data.size}")
-        return ok
-    }
-
-    private fun handleRawSetReport(requestId: Int, reportNumber: Int, reportType: Int, data: ByteArray): Boolean {
-        val transport = tritonTransport
-        if (transport is UsbTritonTransport) {
-            val ok = transport.writeHidReport(reportNumber, reportType, data)
-            if (!ok) status("USB HID write failed for UHID set-report id=$requestId rnum=$reportNumber rtype=$reportType len=${data.size}")
-            return ok
-        }
-        val ok = when (transport) {
-            is BleTritonTransport -> transport.writeHidFeatureReport(data)
-            is FakeTritonTransport -> transport.writeHidFeatureReport(data)
-            else -> {
-                status("UHID set-report id=$requestId unsupported for transport ${transport?.javaClass?.simpleName ?: "none"}")
-                return false
-            }
-        }
-        if (!ok) {
-            status(
-                "HID feature write failed for UHID set-report id=$requestId rnum=0x%02x len=${data.size}; acking Steam anyway".format(
-                    reportNumber,
-                ),
-            )
-        }
-        return true
-    }
-
-    private fun handleTritonReport(report: ByteArray, length: Int) {
-        val triton = TritonReportParser.parse(report, length) ?: return
-        reportCount += 1
-        val now = System.currentTimeMillis()
-        if (now - lastReportStatusAtMs >= REPORT_STATUS_INTERVAL_MS) {
-            lastReportStatusAtMs = now
-            status("Triton reports: count=$reportCount id=0x%02x seq=${triton.sequence} buttons=0x%08x len=$length".format(triton.reportId, triton.buttons.toLong()))
-        }
-
-        val rawClient = rawClientRef.get()
-        if (rawClient != null) {
-            runCatching {
-                val extended = extendedSessionRef.get()
-                var outputs: List<Pair<Int, ByteArray>>
-                val sent = if (extended != null) {
-                    outputs = extended.map(report, length)
-                    rawClient.sendInputReports(outputs)
+    private fun runRawBridge(session: BridgeSession, host: String, port: Int, ticket: String) {
+        val capture = session.transport ?: return
+        val wifi = if (session.mode == MODE_UHID_RAW_IROH) null else wifiNetwork()
+        while (isCurrent(session)) {
+            var raw: UhidRawClient? = null
+            var connection: RawUhidConnection? = null
+            var socket: Socket? = null
+            val extended = if (session.mode == MODE_UHID_EXTENDED_GAMEPAD) ExtendedGamepadSession() else null
+            try {
+                status(session, "Connecting to Steamless Link host")
+                connection = if (session.mode == MODE_UHID_RAW_IROH) {
+                    irohRawUhidConnection(this, ticket, onStatus = { status(session, it) })
                 } else {
-                    val outputReport = if (rawModeRef.get() == MODE_UHID_GENERIC_GAMEPAD) {
-                        mapTritonToGenericGamepad(report, length)
-                    } else {
-                        triton.rawReport
-                    }
-                    outputs = listOf(0 to outputReport)
-                    rawClient.sendInputReport(outputReport, outputReport.size)
+                    RawUhidConnection.tcp(host, port, onSocket = { pending ->
+                        socket = pending
+                        if (!session.attach(pending)) throw IOException("Session stopped during connect")
+                        wifi?.bindSocket(pending)
+                    })
                 }
-                ControllerTestFeed.record(triton, reportCount, outputs,
-                    if (sent) "Accepted by remote send queue; host receipt NOT verified" else "Remote send queue rejected sample")
-                if (!sent) {
-                    rawClientRef.compareAndSet(rawClient, null)
-                    rawClient.close()
-                    status("Steamless Link stream is closed")
-                }
-            }.onFailure { error ->
-                rawClientRef.compareAndSet(rawClient, null)
-                rawClient.close()
-                ControllerTestFeed.record(triton, reportCount, emptyList(), "Remote send failed: ${error.message}")
-                status("Steamless Link stream write failed: ${error.message ?: error::class.java.simpleName}")
-                Log.e(TAG, "UHID raw stream write failed", error)
+                if (!session.attach(connection)) return
+                raw = UhidRawClient(
+                    connection = connection,
+                    onStatus = { status(session, it) },
+                    onGetReport = { device, _, number, type ->
+                        if (!isCurrent(session)) null
+                        else if (extended != null) extended.getReport(device, number, type)
+                        else capture.readHidReport(number, type)
+                    },
+                    onSetReport = { device, _, number, type, data ->
+                        isCurrent(session) && (extended?.setReport(device, number, type, data) ?: capture.writeHidReport(number, type, data))
+                    },
+                    onOutputReport = { _, type, data -> isCurrent(session) && extended == null && capture.sendOutputReport(type, data) },
+                    initialDeviceInfo = when (session.mode) {
+                        MODE_UHID_GENERIC_GAMEPAD -> genericGamepadDeviceInfo()
+                        MODE_UHID_RAW, MODE_UHID_RAW_IROH -> capture.deviceInfo
+                        else -> null
+                    },
+                    initialDevices = extended?.deviceInfos.orEmpty(),
+                )
+                if (!session.attach(raw)) return
+                session.extended = extended
+                session.rawClient.set(raw)
+                status(session, "Connected to Steamless Link host; forwarding controller reports")
+                while (isCurrent(session) && !raw.awaitClosed(RAW_CONNECTION_WAIT_MS)) Unit
+            } catch (error: Exception) {
+                if (isCurrent(session)) status(session, "Steamless Link connection failed: ${error.message ?: error::class.java.simpleName}")
+            } finally {
+                raw?.let { session.rawClient.compareAndSet(it, null); session.release(it) }
+                connection?.let(session::release)
+                socket?.let(session::release)
             }
-            return
-        }
-
-        val localUinput = localUinputRef.get()
-        if (localUinput != null) {
-            runCatching {
-                val packet = sendLocalUinputReport(localUinput, report, length)
-                ControllerTestFeed.record(triton, reportCount, listOf(0 to packet),
-                    "Written to local helper pipe; see Android receipt below")
+            if (isCurrent(session)) {
+                status(session, "Steamless Link stream disconnected; retrying")
+                Thread.sleep(RAW_RECONNECT_DELAY_MS)
             }
-                .onFailure { error ->
-                    if (localUinputRef.compareAndSet(localUinput, null)) {
-                        localUinput.close()
-                        synchronized(closeables) { closeables.remove(localUinput) }
-                    }
-                    ControllerTestFeed.record(triton, reportCount, emptyList(), "Local write failed: ${error.message}")
-                    status("Local uinput stream write failed: ${error.message ?: error::class.java.simpleName}")
-                    Log.e(TAG, "Local uinput stream write failed", error)
-                }
-            return
-        }
-
-        ControllerTestFeed.record(triton, reportCount, emptyList(),
-            if (captureOnly) "Capture only; previews are NOT sent" else "No output stream open")
-        if (!captureOnly && now - lastDroppedStatusAtMs >= DROPPED_STATUS_INTERVAL_MS) {
-            lastDroppedStatusAtMs = now
-            status("Receiving Triton reports, but no output stream is open")
         }
     }
 
-    private fun sendLocalUinputReport(output: LocalUinputXbox360Output, report: ByteArray, length: Int): ByteArray {
-        val nativePacket = ByteArray(Xbox360Protocol.PACKET_SIZE)
-        check(NativeProtocol.tryMapTritonToLocalXbox360(report, length, nativePacket, localMapping)) {
-            "Zig protocol mapper is unavailable on this device"
+    private fun handleTritonReport(session: BridgeSession, report: ByteArray, length: Int) {
+        val raw = session.rawClient.get()
+        val rawMode = session.mode == MODE_UHID_RAW || session.mode == MODE_UHID_RAW_IROH
+        // Interpretation is optional in raw mode: preserve every numbered HID report.
+        val state = TritonReportParser.parse(report, length)
+        if (!rawMode && state == null) return
+        session.reportCount += 1
+        val now = System.currentTimeMillis()
+        if (state != null && now - session.lastReportStatusAtMs >= 1000) {
+            session.lastReportStatusAtMs = now
+            status(session, "Triton reports: count=${session.reportCount} id=0x%02x seq=${state.sequence} buttons=0x%08x len=$length".format(state.reportId, state.buttons.toLong()))
         }
-        output.sendPacket(nativePacket)
-        return nativePacket
+        if (raw == null && session.localOutput.get() == null && session.mode != MODE_CAPTURE_TEST && now - session.lastDroppedStatusAtMs >= 5000) {
+            session.lastDroppedStatusAtMs = now
+            status(session, "Receiving Triton reports, but no output stream is open")
+        }
+        try {
+            var output = emptyList<Pair<Int, ByteArray>>()
+            val disposition = when {
+                raw != null -> {
+                    val extended = session.extended
+                    output = when {
+                        rawMode -> listOf(0 to report.copyOf(length))
+                        extended != null -> extended.map(report, length)
+                        else -> listOf(0 to mapGeneric(report, length))
+                    }
+                    if (raw.sendInputReports(output)) "Accepted by remote send queue; host receipt NOT verified"
+                    else {
+                        session.rawClient.compareAndSet(raw, null)
+                        session.release(raw)
+                        "Remote send queue rejected sample"
+                    }
+                }
+                session.localOutput.get() != null -> {
+                    val packet = ByteArray(Xbox360Protocol.PACKET_SIZE)
+                    check(NativeProtocol.tryMapTritonToLocalXbox360(report, length, packet, session.mapping)) { "Native mapper unavailable" }
+                    session.localOutput.get()?.sendPacket(packet) ?: return
+                    output = listOf(0 to packet)
+                    "Written to local helper pipe; see Android receipt below"
+                }
+                session.mode == MODE_CAPTURE_TEST -> "Capture only; previews are NOT sent"
+                else -> "No output stream open"
+            }
+            if (state != null) ControllerTestFeed.record(state, session.reportCount, output, disposition, sessionId = session.feedGeneration)
+        } catch (error: Exception) {
+            // A local output failure ends the session. Remote failures reconnect.
+            if (raw != null) {
+                session.rawClient.compareAndSet(raw, null)
+                session.release(raw)
+                status(session, "Remote write failed: ${error.message}")
+            } else failSession(session, "Local output failed: ${error.message}")
+        }
+    }
+
+    private fun mapGeneric(report: ByteArray, length: Int): ByteArray = ByteArray(GenericGamepadProtocol.INPUT_REPORT_SIZE).also {
+        check(NativeProtocol.tryMapTritonToGenericGamepad(report, length, it)) { "Native mapper unavailable" }
     }
 
     private fun genericGamepadDeviceInfo(): ByteArray = RawProtocol.encodeDeviceInfo(
-        bus = GenericGamepadProtocol.BUS_USB,
-        vendor = GenericGamepadProtocol.VENDOR_ID,
-        product = GenericGamepadProtocol.PRODUCT_ID,
-        descriptor = GenericGamepadProtocol.REPORT_DESCRIPTOR,
-        name = GenericGamepadProtocol.DEVICE_NAME,
+        GenericGamepadProtocol.BUS_USB, GenericGamepadProtocol.VENDOR_ID, GenericGamepadProtocol.PRODUCT_ID,
+        GenericGamepadProtocol.REPORT_DESCRIPTOR, GenericGamepadProtocol.DEVICE_NAME,
     )
 
-    private fun mapTritonToGenericGamepad(report: ByteArray, length: Int): ByteArray {
-        val packet = ByteArray(GenericGamepadProtocol.INPUT_REPORT_SIZE)
-        check(NativeProtocol.tryMapTritonToGenericGamepad(report, length, packet)) {
-            "Zig protocol mapper is unavailable on this device"
-        }
-        return packet
-    }
-
-    private fun awaitCaptureReady(generation: Long): Boolean {
-        val transport = tritonTransport
-        val label = when (transport) {
-            is BleTritonTransport -> "BLE notifications"
-            is UsbTritonTransport -> "USB reports"
-            else -> return true
-        }
-        status("Waiting for $label before opening output stream")
-        val ready = when (transport) {
-            is BleTritonTransport -> transport.awaitReady(BLE_READY_TIMEOUT_MS)
-            is UsbTritonTransport -> transport.awaitReady(USB_READY_TIMEOUT_MS)
-            else -> false
-        }
-        if (!isCurrentBridge(generation)) return false
-        if (!ready) {
-            status("$label were not ready; not opening output stream")
-            return false
-        }
-        status(if (transport is BleTritonTransport) "BLE capture ready" else "USB capture ready")
-        return true
-    }
-
-    private fun bindProcessToWifiIfAvailable() {
-        val cm = getSystemService(ConnectivityManager::class.java)
-        val networks = cm.allNetworks.mapNotNull { network ->
-            cm.getNetworkCapabilities(network)?.let { capabilities -> network to capabilities }
-        }
-        val summary = networks.joinToString { (network, capabilities) ->
-            val transports = buildList {
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) add("wifi")
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) add("cell")
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) add("vpn")
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) add("bt")
-            }.joinToString("+")
-            "$network:$transports"
-        }
-        status("Available networks: $summary")
-        val wifi = networks.firstOrNull { (_, capabilities) ->
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        }?.first
-        if (wifi != null) {
-            val ok = cm.bindProcessToNetwork(wifi)
-            if (ok) processBoundToNetwork = true
-            status("Bound process networking to Wi-Fi $wifi: $ok")
-        } else {
-            status("No Wi-Fi internet network found; using default network")
+    private fun wifiNetwork(): Network? {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        return manager.allNetworks.firstOrNull { network ->
+            manager.getNetworkCapabilities(network)?.let {
+                it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            } == true
         }
     }
 
-    private fun clearProcessNetworkBinding() {
-        if (!processBoundToNetwork) return
-        val cm = getSystemService(ConnectivityManager::class.java)
-        val ok = cm.bindProcessToNetwork(null)
-        processBoundToNetwork = false
-        status("Cleared process network binding: $ok")
+    private fun isCurrent(session: BridgeSession): Boolean = session.isActive && currentSession.get() === session
+
+    private fun failSession(session: BridgeSession, reason: String) {
+        if (!currentSession.compareAndSet(session, null)) return
+        session.close()
+        main.post {
+            if (!destroyed && latestStartId == session.startId && currentSession.get() == null) {
+                terminalFailure = true
+                ControllerTestFeed.stop()
+                status("Bridge stopped: $reason. Tap Start to retry.")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(session.startId)
+            }
+        }
     }
-
-    private fun isCurrentBridge(generation: Long): Boolean = bridgeGeneration.get() == generation
-
-    private fun isDebuggable(): Boolean = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     private fun stopBridge() {
-        bridgeGeneration.incrementAndGet()
-        rawClientRef.getAndSet(null)
-        rawModeRef.set(null)
-        extendedSessionRef.set(null)
-        localUinputRef.getAndSet(null)
-        clearProcessNetworkBinding()
-        synchronized(closeables) {
-            closeables.asReversed().forEach { closeable -> runCatching { closeable.close() } }
-            closeables.clear()
-        }
-        tritonTransport = null
+        currentSession.getAndSet(null)?.close()
         ControllerTestFeed.stop()
-        reportCount = 0
-        lastReportStatusAtMs = 0
-        lastDroppedStatusAtMs = 0
+    }
+
+    private fun status(session: BridgeSession, message: String) {
+        main.post { if (isCurrent(session)) status(message) }
     }
 
     private fun status(message: String) {
         Log.i(TAG, message)
-        if (!shouldShowInNotification(message)) return
+        if (DIAGNOSTIC_NOTIFICATION_PREFIXES.any(message::startsWith)) return
         ControllerTestFeed.status(message)
         sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS, message))
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification(message))
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
     }
 
-    private fun shouldShowInNotification(message: String): Boolean {
-        // Keep detailed diagnostics in logcat without turning the foreground
-        // notification into a constantly changing debug console.
-        return !DIAGNOSTIC_NOTIFICATION_PREFIXES.any { prefix -> message.startsWith(prefix) }
-    }
-
-    private fun notification(text: String): Notification {
-        val builder = if (Build.VERSION.SDK_INT >= 26) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-        }
-        return builder
-            .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("SteamlessLink")
-            .setContentText(text)
-            .setOngoing(true)
-            .build()
-    }
-
-    private fun ensureNotificationChannel() {
-        if (Build.VERSION.SDK_INT < 26) return
-        val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Controller bridge",
-            NotificationManager.IMPORTANCE_MIN,
-        ).apply {
-            setShowBadge(false)
-        }
-        manager.createNotificationChannel(channel)
-    }
+    private fun notification(text: String): Notification = Notification.Builder(this, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_launcher).setContentTitle("SteamlessLink").setContentText(text).setOngoing(true).build()
 
     override fun onDestroy() {
-        stopBridge()
+        destroyed = true
+        currentSession.getAndSet(null)?.close()
+        if (!terminalFailure) ControllerTestFeed.stop()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -547,6 +324,8 @@ class ControllerBridgeService : Service() {
         const val EXTRA_TRANSPORT = "xyz.reo101.steamlesslink.extra.TRANSPORT"
         const val EXTRA_MODE = "xyz.reo101.steamlesslink.extra.MODE"
         const val EXTRA_IROH_TICKET = "xyz.reo101.steamlesslink.extra.IROH_TICKET"
+        const val EXTRA_FAKE_FAILURE_AFTER_REPORTS = "xyz.reo101.steamlesslink.extra.FAKE_FAILURE_AFTER_REPORTS"
+        const val EXTRA_FAKE_REPORT_ID = "xyz.reo101.steamlesslink.extra.FAKE_REPORT_ID"
         const val ACTION_STATUS = "xyz.reo101.steamlesslink.action.STATUS"
         const val EXTRA_STATUS = "xyz.reo101.steamlesslink.extra.STATUS"
         const val TRANSPORT_BLE = "ble"
@@ -558,35 +337,19 @@ class ControllerBridgeService : Service() {
         const val MODE_UHID_EXTENDED_GAMEPAD = "uhid-extended-gamepad"
         const val MODE_LOCAL_UINPUT_XBOX360 = "local-uinput-xbox360"
         const val MODE_CAPTURE_TEST = "capture-test"
-        private const val DEFAULT_HOST = ""
         private const val DEFAULT_PORT = 3244
         private const val CHANNEL_ID = "controller_bridge_quiet"
         private const val NOTIFICATION_ID = 1001
-        private const val REPORT_STATUS_INTERVAL_MS = 1000L
-        private const val DROPPED_STATUS_INTERVAL_MS = 5000L
         private const val BLE_READY_TIMEOUT_MS = 12_000L
         private const val USB_READY_TIMEOUT_MS = 30_000L
         private const val RAW_CONNECTION_WAIT_MS = 500L
         private const val RAW_RECONNECT_DELAY_MS = 2_000L
+        // Process-owned: late startup results still need disposal after onDestroy.
+        private val resourceCloser = Executors.newCachedThreadPool { Thread(it, "bridge-resource-close").apply { isDaemon = true } }
         private val DIAGNOSTIC_NOTIFICATION_PREFIXES = listOf(
-            "Available networks:",
-            "BLE MTU changed",
-            "BLE notifications:",
-            "Bound process networking",
-            "Cleared process network binding",
-            "Dropped queued BLE output reports",
-            "Dropped queued Steamless Link input reports",
-            "Enabling BLE notifications for",
-            "Ignoring BLE report",
-            "Triton reports:",
-            "UHID get-report",
-            "UHID output report",
-            "UHID set-report",
-            "Steamless Link frame",
-            "Steamless Link get-report",
-            "Steamless Link output report",
-            "Steamless Link set-report",
-            "Valve char",
+            "Triton reports:", "BLE MTU changed", "BLE notifications:", "Dropped queued", "Enabling BLE notifications for", "Ignoring BLE report",
+            "UHID get-report", "UHID output report", "UHID set-report", "Steamless Link frame", "Steamless Link get-report",
+            "Steamless Link output report", "Steamless Link set-report", "Valve char",
         )
         private const val TAG = "ControllerBridge"
     }

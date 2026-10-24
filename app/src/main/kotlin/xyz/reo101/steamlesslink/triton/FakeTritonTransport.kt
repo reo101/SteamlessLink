@@ -1,6 +1,5 @@
 package xyz.reo101.steamlesslink.triton
 
-import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -13,7 +12,10 @@ class FakeTritonTransport(
     private val onReport: (report: ByteArray, length: Int) -> Unit,
     private val onStatus: (String) -> Unit,
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
-) : Closeable {
+    private val onFailure: (String) -> Unit = {},
+    private val failureAfterReports: Int = 0,
+    private val reportFactory: (Int) -> ByteArray = ::makeReport,
+) : TritonTransport {
     private val closed = AtomicBoolean(false)
     private val thread = Thread(::runLoop, "fake-triton-transport").apply {
         isDaemon = true
@@ -22,7 +24,7 @@ class FakeTritonTransport(
     private var outputReportCount = 0L
     private var featureWriteCount = 0L
 
-    fun start() {
+    override fun start() {
         onStatus("Fake Triton transport started interval=${intervalMs}ms")
         thread.start()
     }
@@ -50,11 +52,28 @@ class FakeTritonTransport(
         return true
     }
 
+    override fun awaitReady(timeoutMs: Long): Boolean = !closed.get()
+
+    override fun readHidReport(reportNumber: Int, reportType: Int): ByteArray? =
+        if (reportType == 0) readHidFeatureReport(reportNumber) else null
+
+    override fun writeHidReport(reportNumber: Int, reportType: Int, report: ByteArray): Boolean =
+        reportType == 0 && writeHidFeatureReport(report)
+
+    override fun sendOutputReport(reportType: Int, report: ByteArray): Boolean = enqueueHidOutputReport(report)
+
     private fun runLoop() {
+        var reports = 0
         while (!closed.get()) {
-            val report = makeReport(sequence)
+            val report = reportFactory(sequence)
             onReport(report, report.size)
             sequence = (sequence + 1) and 0xff
+            reports += 1
+            if (failureAfterReports > 0 && reports >= failureAfterReports) {
+                close()
+                onFailure("Synthetic capture failure after $reports reports")
+                return
+            }
             try {
                 Thread.sleep(intervalMs)
             } catch (_: InterruptedException) {

@@ -36,57 +36,6 @@ pub fn main(init: std.process.Init) !void {
         \\    const val MAX_DEVICE_NAME_SIZE = {d}
         \\    const val DEVICE_INFO_HEADER_SIZE = {d}
         \\
-        \\    fun encodeFrameHeader(type: Int, payloadLength: Int): Int {{
-        \\        require(type in 0..0xff)
-        \\        val safeLength = payloadLength.coerceIn(0, MAX_FRAME_PAYLOAD)
-        \\        return (type shl 16) or safeLength
-        \\    }}
-        \\
-        \\    fun encodeDeviceBundle(devices: List<ByteArray>): ByteArray {{
-        \\        require(devices.size in 1..MAX_DEVICES)
-        \\        val length = DEVICE_BUNDLE_HEADER_SIZE + devices.sumOf {{ DEVICE_BUNDLE_ENTRY_SIZE + it.size }}
-        \\        require(length <= MAX_FRAME_PAYLOAD)
-        \\        val buffer = java.nio.ByteBuffer.allocate(length).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        \\        buffer.put(devices.size.toByte())
-        \\        for (info in devices) {{
-        \\            require(info.size in 1..MAX_FRAME_PAYLOAD)
-        \\            buffer.putShort(info.size.toShort()).put(info)
-        \\        }}
-        \\        return buffer.array()
-        \\    }}
-        \\
-        \\    fun encodeDeviceInfo(
-        \\        bus: Int,
-        \\        vendor: Int,
-        \\        product: Int,
-        \\        descriptor: ByteArray,
-        \\        name: String = "",
-        \\    ): ByteArray {{
-        \\        require(vendor in 0..0xffff)
-        \\        require(product in 0..0xffff)
-        \\        require(descriptor.size in 1..MAX_REPORT_DESCRIPTOR_SIZE)
-        \\        val nameBytes = name.toByteArray(Charsets.UTF_8)
-        \\        require(nameBytes.size <= MAX_DEVICE_NAME_SIZE && nameBytes.none {{ it == 0.toByte() }})
-        \\        val descriptorEnd = DEVICE_INFO_HEADER_SIZE + descriptor.size
-        \\        val extensionSize = if (nameBytes.isEmpty()) 0 else 1 + nameBytes.size
-        \\        return ByteArray(descriptorEnd + extensionSize).also {{ out ->
-        \\            out[0] = bus.toByte()
-        \\            out[1] = (bus ushr 8).toByte()
-        \\            out[2] = (bus ushr 16).toByte()
-        \\            out[3] = (bus ushr 24).toByte()
-        \\            out[4] = vendor.toByte()
-        \\            out[5] = (vendor ushr 8).toByte()
-        \\            out[6] = product.toByte()
-        \\            out[7] = (product ushr 8).toByte()
-        \\            out[8] = descriptor.size.toByte()
-        \\            out[9] = (descriptor.size ushr 8).toByte()
-        \\            descriptor.copyInto(out, destinationOffset = DEVICE_INFO_HEADER_SIZE)
-        \\            if (nameBytes.isNotEmpty()) {{
-        \\                out[descriptorEnd] = nameBytes.size.toByte()
-        \\                nameBytes.copyInto(out, destinationOffset = descriptorEnd + 1)
-        \\            }}
-        \\        }}
-        \\    }}
         \\}}
         \\
         \\internal object Xbox360Protocol {{
@@ -152,6 +101,10 @@ pub fn main(init: std.process.Init) !void {
         try writer.interface.print("    val {s} = byteArrayOf(", .{name});
         for (@field(triton, name)) |byte| try writer.interface.print("0x{x:0>2}.toByte(), ", .{byte});
         try writer.interface.writeAll(")\n");
+    }
+    try writer.interface.writeAll("}\n\ninternal object TritonButtons {\n");
+    inline for (@typeInfo(triton.Buttons).@"struct".decl_names) |name| {
+        try writer.interface.print("    const val {s}: UInt = 0x{x:0>8}u\n", .{ name, @field(triton.Buttons, name) });
     }
     try writer.interface.writeAll("}\n");
     try writer.interface.flush();

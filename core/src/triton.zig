@@ -22,8 +22,11 @@ pub const Buttons = struct {
     pub const B: u32 = 0x0000_0002;
     pub const X: u32 = 0x0000_0004;
     pub const Y: u32 = 0x0000_0008;
+    pub const QAM: u32 = 0x0000_0010;
     pub const R3: u32 = 0x0000_0020;
     pub const VIEW: u32 = 0x0000_0040;
+    pub const R4: u32 = 0x0000_0080;
+    pub const R5: u32 = 0x0000_0100;
     pub const R: u32 = 0x0000_0200;
     pub const DPAD_DOWN: u32 = 0x0000_0400;
     pub const DPAD_RIGHT: u32 = 0x0000_0800;
@@ -32,7 +35,19 @@ pub const Buttons = struct {
     pub const MENU: u32 = 0x0000_4000;
     pub const L3: u32 = 0x0000_8000;
     pub const STEAM: u32 = 0x0001_0000;
+    pub const L4: u32 = 0x0002_0000;
+    pub const L5: u32 = 0x0004_0000;
     pub const L: u32 = 0x0008_0000;
+    pub const RIGHT_JOYSTICK_TOUCH: u32 = 0x0010_0000;
+    pub const RIGHT_TOUCHPAD_TOUCH: u32 = 0x0020_0000;
+    pub const RIGHT_TOUCHPAD_CLICK: u32 = 0x0040_0000;
+    pub const RIGHT_TRIGGER_CLICK: u32 = 0x0080_0000;
+    pub const LEFT_JOYSTICK_TOUCH: u32 = 0x0100_0000;
+    pub const LEFT_TOUCHPAD_TOUCH: u32 = 0x0200_0000;
+    pub const LEFT_TOUCHPAD_CLICK: u32 = 0x0400_0000;
+    pub const LEFT_TRIGGER_CLICK: u32 = 0x0800_0000;
+    pub const RIGHT_GRIP_TOUCH: u32 = 0x1000_0000;
+    pub const LEFT_GRIP_TOUCH: u32 = 0x2000_0000;
 };
 
 const XboxButtons = struct {
@@ -107,13 +122,13 @@ pub fn mapTritonToLocalXbox360(report: []const u8, out: []u8, options: LocalOpti
     try mapTritonToXbox360(report, out);
     const state = try parse(report);
     var buttons = u32Le(out, 0);
-    for ([_]u32{ 0x20000, 0x40000, 0x80, 0x100 }, options.grips) |grip, mapped| {
+    for ([_]u32{ Buttons.L4, Buttons.L5, Buttons.R4, Buttons.R5 }, options.grips) |grip, mapped| {
         if (has(state.buttons, grip)) buttons |= mapped;
     }
     putU32Le(out, 0, buttons);
     var x: i32 = state.right_stick_x;
     var y: i32 = state.right_stick_y;
-    const touching = has(state.buttons, 0x200000);
+    const touching = has(state.buttons, Buttons.RIGHT_TOUCHPAD_TOUCH);
     if (options.right_pad_stick and touching) {
         if (state.pads) |pads| {
             x = pads[1].x;
