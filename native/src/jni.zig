@@ -15,6 +15,7 @@ const triton = @import("steamless-core").triton;
 
 // Generated per target from Android's official jni.h, without linking libc.
 const jni = @import("jni-bindings");
+const JniEnvironment = @import("jni_environment.zig");
 const jint = jni.jint;
 const jboolean = jni.jboolean;
 const jobject = jni.jobject;
@@ -112,12 +113,13 @@ const NativeProtocol = struct {
 };
 
 fn mapLocal(env: *JNIEnv, report_array: jbyteArray, length: jint, out: jbyteArray, options: triton.LocalOptions) !void {
-    if (env.*[0].GetArrayLength.?(env, out) < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
+    const environment: JniEnvironment = .init(env);
+    if (environment.call(.GetArrayLength, .{out}) < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
     var report: [MAX_TRITON_REPORT_BYTES]u8 = undefined;
     const bytes = try readTritonReport(env, report_array, length, &report);
     var packet: [triton.XBOX360_PACKET_SIZE]u8 = undefined;
     try triton.mapTritonToLocalXbox360(bytes, &packet, options);
-    env.*[0].SetByteArrayRegion.?(env, out, 0, packet.len, @ptrCast(&packet));
+    environment.call(.SetByteArrayRegion, .{ out, 0, packet.len, @ptrCast(&packet) });
 }
 
 fn mapTritonToXbox360(
@@ -126,20 +128,20 @@ fn mapTritonToXbox360(
     requested_length: jint,
     out_packet_array: jbyteArray,
 ) !void {
-    const out_array_len = env.*[0].GetArrayLength.?(env, out_packet_array);
+    const environment: JniEnvironment = .init(env);
+    const out_array_len = environment.call(.GetArrayLength, .{out_packet_array});
     if (out_array_len < triton.XBOX360_PACKET_SIZE) return error.OutputBufferTooSmall;
 
     var report: [MAX_TRITON_REPORT_BYTES]u8 = @splat(0);
     const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
     var packet: [triton.XBOX360_PACKET_SIZE]u8 = @splat(0);
     try triton.mapTritonToXbox360(report_bytes, &packet);
-    env.*[0].SetByteArrayRegion.?(
-        env,
+    environment.call(.SetByteArrayRegion, .{
         out_packet_array,
         0,
         triton.XBOX360_PACKET_SIZE,
         @ptrCast(&packet),
-    );
+    });
 }
 
 fn mapTritonToGenericGamepad(
@@ -148,29 +150,30 @@ fn mapTritonToGenericGamepad(
     requested_length: jint,
     out_packet_array: jbyteArray,
 ) !void {
-    const out_array_len = env.*[0].GetArrayLength.?(env, out_packet_array);
+    const environment: JniEnvironment = .init(env);
+    const out_array_len = environment.call(.GetArrayLength, .{out_packet_array});
     if (out_array_len < generic_gamepad.INPUT_REPORT_SIZE) return error.OutputBufferTooSmall;
 
     var report: [MAX_TRITON_REPORT_BYTES]u8 = @splat(0);
     const report_bytes = try readTritonReport(env, report_array, requested_length, &report);
     var packet: [generic_gamepad.INPUT_REPORT_SIZE]u8 = @splat(0);
     try generic_gamepad.mapTritonToInput(report_bytes, &packet);
-    env.*[0].SetByteArrayRegion.?(
-        env,
+    environment.call(.SetByteArrayRegion, .{
         out_packet_array,
         0,
         generic_gamepad.INPUT_REPORT_SIZE,
         @ptrCast(&packet),
-    );
+    });
 }
 
 fn mapTritonToExtendedGamepad(env: *JNIEnv, report_array: jbyteArray, requested_length: jint, out_packet_array: jbyteArray) !void {
-    if (env.*[0].GetArrayLength.?(env, out_packet_array) < extended_gamepad.PACKET_SIZE) return error.OutputBufferTooSmall;
+    const environment: JniEnvironment = .init(env);
+    if (environment.call(.GetArrayLength, .{out_packet_array}) < extended_gamepad.PACKET_SIZE) return error.OutputBufferTooSmall;
     var report: [MAX_TRITON_REPORT_BYTES]u8 = undefined;
     const bytes = try readTritonReport(env, report_array, requested_length, &report);
     var packet: [extended_gamepad.PACKET_SIZE]u8 = undefined;
     try extended_gamepad.mapTritonToInput(bytes, &packet);
-    env.*[0].SetByteArrayRegion.?(env, out_packet_array, 0, extended_gamepad.PACKET_SIZE, @ptrCast(&packet));
+    environment.call(.SetByteArrayRegion, .{ out_packet_array, 0, extended_gamepad.PACKET_SIZE, @ptrCast(&packet) });
 }
 
 fn readTritonReport(
@@ -180,19 +183,19 @@ fn readTritonReport(
     out: *[MAX_TRITON_REPORT_BYTES]u8,
 ) ![]const u8 {
     if (requested_length < 0) return error.InvalidLength;
-    const report_array_len = env.*[0].GetArrayLength.?(env, report_array);
+    const environment: JniEnvironment = .init(env);
+    const report_array_len = environment.call(.GetArrayLength, .{report_array});
     if (requested_length > report_array_len) return error.InvalidLength;
 
     const requested_len: usize = @intCast(requested_length);
     const copy_len = @min(requested_len, MAX_TRITON_REPORT_BYTES);
     if (copy_len > 0) {
-        env.*[0].GetByteArrayRegion.?(
-            env,
+        environment.call(.GetByteArrayRegion, .{
             report_array,
             0,
             @intCast(copy_len),
             @ptrCast(out),
-        );
+        });
     }
     return out[0..copy_len];
 }
@@ -213,7 +216,8 @@ fn throwZigError(env: *JNIEnv, err: anyerror) void {
 }
 
 fn throwNew(env: *JNIEnv, class_name: [*:0]const u8, message: [*:0]const u8) void {
-    const cls = env.*[0].FindClass.?(env, class_name);
+    const environment: JniEnvironment = .init(env);
+    const cls = environment.call(.FindClass, .{class_name});
     if (cls == null) return;
-    _ = env.*[0].ThrowNew.?(env, cls, message);
+    _ = environment.call(.ThrowNew, .{ cls, message });
 }

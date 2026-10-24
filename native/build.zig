@@ -35,4 +35,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(library);
+
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/jni_environment.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "jni-bindings", .module = bindings.mod }},
+        }),
+    });
+    const run_tests = b.addRunArtifact(tests);
+    b.step("test", "Run JNI environment adapter tests").dependOn(&run_tests.step);
 }
