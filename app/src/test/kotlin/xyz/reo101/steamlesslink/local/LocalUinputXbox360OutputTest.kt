@@ -10,6 +10,38 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LocalUinputXbox360OutputTest {
+    private class HelperProcess(ready: Boolean) : Process() {
+        val exited = CountDownLatch(1)
+        @Volatile var status = 0
+        private val input = ByteArrayInputStream(ByteArray(0))
+        private val errors = ByteArrayInputStream(if (ready) "steamless-uinput: ready\n".toByteArray() else ByteArray(0))
+        override fun getOutputStream() = java.io.ByteArrayOutputStream()
+        override fun getInputStream() = input
+        override fun getErrorStream() = errors
+        override fun destroy() { exited.countDown() }
+        override fun waitFor(): Int { exited.await(); return status }
+        override fun exitValue(): Int = if (exited.count == 0L) status else throw IllegalThreadStateException()
+    }
+
+    @Test fun missingReadinessTerminatesTheHelper() {
+        val process = HelperProcess(false)
+        LocalUinputXbox360Output(process).use { output ->
+            assertThrows(IOException::class.java) { output.awaitReady(20) }
+            assertEquals(0L, process.exited.count)
+        }
+    }
+
+    @Test fun readyHelperExitReportsFailureWithoutAnotherPacket() {
+        val process = HelperProcess(true)
+        val failed = CompletableFuture<String>()
+        LocalUinputXbox360Output(process).use { output ->
+            output.awaitReady(1000, onFailure = { failed.complete(it) })
+            process.status = 9
+            process.destroy()
+            assertTrue(failed.get(1, TimeUnit.SECONDS).contains("status 9"))
+        }
+    }
+
     @Test fun closeTerminatesTheHelperBeforeWaitingForABlockedPipe() {
         val writing = CountDownLatch(1)
         val destroyed = CountDownLatch(1)

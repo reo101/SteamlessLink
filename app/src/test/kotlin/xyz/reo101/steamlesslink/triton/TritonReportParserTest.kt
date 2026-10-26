@@ -7,6 +7,20 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TritonReportParserTest {
+    @Test fun sharedKotlinAndZigVectors() {
+        javaClass.getResourceAsStream("/triton-state-vectors.tsv")!!.bufferedReader().useLines { lines ->
+            lines.filter { it.isNotBlank() && !it.startsWith('#') }.forEach { line ->
+                val fields = line.split(Regex("\\s+"))
+                val report = fields[0].chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val state = requireNotNull(TritonReportParser.parse(report))
+                val actual = listOf(state.buttons.toLong(), state.leftStickX.toLong(), state.leftStickY.toLong(),
+                    state.rightStickX.toLong(), state.rightStickY.toLong(), state.leftPadX!!.toLong(), state.leftPadY!!.toLong(),
+                    state.rightPadX!!.toLong(), state.rightPadY!!.toLong())
+                assertEquals(fields.drop(1).take(actual.size).map(String::toLong), actual)
+            }
+        }
+    }
+
     @Test
     fun parsesUsbStateReport() {
         val report = ByteArray(64)

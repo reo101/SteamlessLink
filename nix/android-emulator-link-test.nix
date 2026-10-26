@@ -271,9 +271,6 @@ writeShellApplication {
         assert not extended or (len(companions) == 5 and controls == {101, 102, 201, 202})
     result.write_text(f'ok mode={mode} reports={reports}\n')
     PY
-    python3 "$workdir/raw-server.py" "$host_port" "$workdir/server-result" "$workdir/server.log" "$workdir/iroh-ticket" "$test_mode" &
-    server_pid=$!
-
     apk="''${STEAMLESSLINK_APK:-${androidApk}/app-debug.apk}"
     test_apk="''${STEAMLESSLINK_TEST_APK:-${androidApk}/app-debug-androidTest.apk}"
     "$adb" -s "$adb_serial" install -r "$apk" >/dev/null
@@ -289,11 +286,16 @@ writeShellApplication {
       exit 1
     fi
     grep -E '^OK \([0-9]+ tests?\)' "$workdir/instrumentation.log"
+    grep -E 'transportLatency|irohControllerId' "$workdir/instrumentation.log" || true
+    python3 "$workdir/raw-server.py" "$host_port" "$workdir/server-result" "$workdir/server.log" "$workdir/iroh-ticket" "$test_mode" &
+    server_pid=$!
 
     if [ "$iroh_mode" = 1 ]; then
+      controller_id="$(sed -n 's/.*INSTRUMENTATION_STATUS: irohControllerId=//p' "$workdir/instrumentation.log" | tr -d '\r' | head -n1)"
+      test -n "$controller_id"
       STEAMLESS_IROH_BIND_ADDR="0.0.0.0:$iroh_port" \
         STEAMLESS_IROH_EXTERNAL_ADDR="10.0.2.2:$iroh_port" \
-        ${steamlessLinkIrohProxy}/bin/steamless-link-iroh-proxy --ticket-file "$workdir/iroh-ticket" "127.0.0.1:$host_port" >"$workdir/iroh-ticket-stdout" 2>"$workdir/iroh-proxy.log" &
+        ${steamlessLinkIrohProxy}/bin/steamless-link-iroh-proxy --allow-peer "$controller_id" --ticket-file "$workdir/iroh-ticket" "127.0.0.1:$host_port" >"$workdir/iroh-ticket-stdout" 2>"$workdir/iroh-proxy.log" &
       proxy_pid=$!
       for _ in $(seq 1 100); do [ -s "$workdir/iroh-ticket" ] && break; sleep 0.1; done
       mode=uhid-raw-iroh
@@ -302,13 +304,14 @@ writeShellApplication {
     fi
     "$adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
 
-    "$adb" -s "$adb_serial" shell am start \
-      -n "$package_name/.MainActivity" \
-      --ez xyz.reo101.steamlesslink.extra.AUTOSTART true \
-      --es xyz.reo101.steamlesslink.extra.HOST 127.0.0.1 \
-      --ei xyz.reo101.steamlesslink.extra.PORT "$host_port" \
-      --es xyz.reo101.steamlesslink.extra.TRANSPORT fake \
-      --es xyz.reo101.steamlesslink.extra.MODE "$mode" >/dev/null
+    "$adb" -s "$adb_serial" shell am instrument -w \
+      -e class xyz.reo101.steamlesslink.testing.BridgeAutomationInstrumentationTest \
+      -e remoteBridge true -e host 127.0.0.1 -e port "$host_port" -e mode "$mode" \
+      "$package_name.test/androidx.test.runner.AndroidJUnitRunner" >"$workdir/forwarding.log"
+    if ! grep -Eq '^OK \([0-9]+ tests?\)' "$workdir/forwarding.log"; then
+      cat "$workdir/forwarding.log" >&2
+      exit 1
+    fi
 
     result_deadline=$((SECONDS + 60))
     while [ "$SECONDS" -lt "$result_deadline" ]; do

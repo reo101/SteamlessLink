@@ -278,6 +278,22 @@ test "optional pads and IMU require complete fields and preserve timestamp units
     }
 }
 
+test "shared Kotlin and Zig report vectors" {
+    var lines = std.mem.tokenizeScalar(u8, @embedFile("testdata/triton-state-vectors.tsv"), '\n');
+    while (lines.next()) |line| {
+        if (line[0] == '#') continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        var storage: [64]u8 = undefined;
+        const report = try std.fmt.hexToBytes(&storage, fields.next().?);
+        const state = try parse(report);
+        const actual = [_]i64{ state.buttons, state.left_stick_x, state.left_stick_y,
+            state.right_stick_x, state.right_stick_y, state.pads.?[0].x, state.pads.?[0].y,
+            state.pads.?[1].x, state.pads.?[1].y, state.imu.?.timestamp_us };
+        for (actual) |value| try std.testing.expectEqual(try std.fmt.parseInt(i64, fields.next().?, 10), value);
+        try std.testing.expect(fields.next() == null);
+    }
+}
+
 test "Xbox 360 mapper rejects invalid buffers" {
     var packet: [XBOX360_PACKET_SIZE]u8 = @splat(0);
     try std.testing.expectError(error.ReportTooShort, mapTritonToXbox360(&[_]u8{0x45}, &packet));

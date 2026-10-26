@@ -20,7 +20,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-fun fetchIrohTicket(host: String, port: Int, connectTimeoutMs: Int = 10_000): String = Socket().use { socket ->
+fun fetchIrohTicket(host: String, port: Int, connectTimeoutMs: Int = 10_000, onSocket: (Socket) -> Unit = {}): String = Socket().use { socket ->
+    onSocket(socket)
     socket.tcpNoDelay = true
     socket.soTimeout = connectTimeoutMs
     socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
@@ -80,7 +81,16 @@ class UhidRawClient(
     private val inputQueueLock = Object()
     // Queue complete samples, not individual companion reports: congestion must
     // never starve the gamepad or drop every touch-release behind sensor traffic.
-    private val queuedInputReports = ArrayDeque<List<Pair<Int, ByteArray>>>()
+    private data class QueuedSample(val reports: List<Pair<Int, ByteArray>>, val queuedAtNs: Long)
+    data class Statistics(val sentSamples: Long, val droppedSamples: Long, val maxQueueDelayUs: Long, val maxWriteDurationUs: Long)
+    private val queuedInputReports = ArrayDeque<QueuedSample>()
+    private var sentSamples = 0L
+    private var maxQueueDelayNs = 0L
+    private var maxWriteDurationNs = 0L
+
+    fun statistics(): Statistics = synchronized(inputQueueLock) {
+        Statistics(sentSamples, droppedInputReports, maxQueueDelayNs / 1000, maxWriteDurationNs / 1000)
+    }
     private val bundleReady = CountDownLatch(1)
     @Volatile private var bundleAccepted = false
 
@@ -145,7 +155,7 @@ class UhidRawClient(
                 queuedInputReports.removeFirst()
                 recordDroppedInputReports(1)
             }
-            queuedInputReports.addLast(payload)
+            queuedInputReports.addLast(QueuedSample(payload, System.nanoTime()))
             inputQueueLock.notifyAll()
         }
         return true
@@ -166,8 +176,16 @@ class UhidRawClient(
                 queuedInputReports.removeFirst()
             }
 
+            val writeStarted = System.nanoTime()
+            synchronized(inputQueueLock) {
+                maxQueueDelayNs = maxOf(maxQueueDelayNs, writeStarted - payload.queuedAtNs)
+            }
             runCatching {
-                for ((device, report) in payload) sendDeviceFrame(device, RawProtocol.FRAME_INPUT, report)
+                for ((device, report) in payload.reports) sendDeviceFrame(device, RawProtocol.FRAME_INPUT, report)
+                synchronized(inputQueueLock) {
+                    sentSamples += 1
+                    maxWriteDurationNs = maxOf(maxWriteDurationNs, System.nanoTime() - writeStarted)
+                }
             }
                 .onFailure { error ->
                     if (!closed.get()) onStatus("Steamless Link writer stopped: ${error.message ?: error::class.java.simpleName}")

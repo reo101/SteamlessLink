@@ -175,6 +175,9 @@ class ControllerTestingInstrumentationTest {
             }
             instrumentation.waitForIdleSync()
         }
+        // Activity transitions can complete after the main queue first becomes idle.
+        val pauseDeadline = System.nanoTime() + 3_000_000_000
+        while (ControllerTestFeed.observing && System.nanoTime() < pauseDeadline) Thread.sleep(20)
         assertFalse(ControllerTestFeed.observing)
     }
 }

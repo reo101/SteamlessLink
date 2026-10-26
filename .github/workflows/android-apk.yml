@@ -13,8 +13,50 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.paths.outputs.android }}
+      kernel: ${{ steps.paths.outputs.kernel }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: paths
+        with:
+          filters: |
+            android:
+              - 'app/**'
+              - 'core/**'
+              - 'native/**'
+              - 'iroh-proxy/**'
+              - 'nix/android*'
+              - 'nix/iroh*'
+              - 'nix/native-dependencies.nix'
+              - 'nix/gradle-dependencies.json'
+              - '*gradle*'
+              - 'outputs.nix'
+              - 'flake.lock'
+              - '.github/workflows/**'
+            kernel:
+              - 'server/**'
+              - 'client/**'
+              - 'core/**'
+              - 'native/src/uinput_gamepad.zig'
+              - 'iroh-proxy/**'
+              - 'nix/modules/**'
+              - 'nix/tests/**'
+              - 'nix/uinput-gamepad.nix'
+              - 'outputs.nix'
+              - 'flake.lock'
+              - '.github/workflows/**'
+
   android:
+    needs: changes
     name: Android APK, lint, JVM and Zig tests
     runs-on: ubuntu-latest
     steps:
@@ -31,13 +73,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: steamlesslink-debug-apks
-          path: result-apk/*.apk
+          path: result-apk/*
           if-no-files-found: error
       - name: Enable KVM on the disposable runner
-        if: github.event_name == 'schedule' || inputs.integration == true
+        if: github.event_name == 'schedule' || inputs.integration == true || needs.changes.outputs.android == 'true'
         run: sudo chmod 666 /dev/kvm
       - name: Run instrumentation and raw, generic, extended and Iroh emulator tests
-        if: github.event_name == 'schedule' || inputs.integration == true
+        if: github.event_name == 'schedule' || inputs.integration == true || needs.changes.outputs.android == 'true'
         run: |
           nix run .#android-emulator-link-test
           STEAMLESS_ANDROID_TEST_MODE=uhid-generic-gamepad nix run .#android-emulator-link-test
@@ -57,8 +99,9 @@ jobs:
       - run: nix build .#steamless-link-host .#steamless-link-controller .#checks.x86_64-linux.iroh-proxy-roundtrip
 
   kernel-integration:
+    needs: changes
     name: Linux UHID, controller capture and uinput tests
-    if: github.event_name == 'schedule' || inputs.integration == true
+    if: github.event_name == 'schedule' || inputs.integration == true || needs.changes.outputs.kernel == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

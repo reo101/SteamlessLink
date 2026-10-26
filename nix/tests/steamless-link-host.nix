@@ -400,6 +400,8 @@ in
           openFirewall = true;
           iroh = {
             enable = true;
+            # Public RFC 8032 test identity. This VM only exercises ticket bootstrap.
+            allowedPeers = [ "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" ];
             inherit (irohProxy) bindAddr externalAddr;
           };
         };

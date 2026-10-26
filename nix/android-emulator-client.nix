@@ -127,19 +127,19 @@ writeShellApplication {
     fi
 
     "$adb" -s "$adb_serial" install -r "$apk" >/dev/null
+    "$adb" -s "$adb_serial" install -r "''${STEAMLESSLINK_TEST_APK:-${androidApk}/app-debug-androidTest.apk}" >/dev/null
     "$adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
     "$adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1 || true
     "$adb" -s "$adb_serial" shell pm grant "$package_name" android.permission.BLUETOOTH_SCAN >/dev/null 2>&1 || true
     "$adb" -s "$adb_serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
     "$adb" -s "$adb_serial" logcat -c >/dev/null || true
 
-    "$adb" -s "$adb_serial" shell am start \
-      -n "$package_name/.MainActivity" \
-      --ez xyz.reo101.steamlesslink.extra.AUTOSTART true \
-      --es xyz.reo101.steamlesslink.extra.HOST "$bridge_host" \
-      --ei xyz.reo101.steamlesslink.extra.PORT "$host_port" \
-      --es xyz.reo101.steamlesslink.extra.TRANSPORT fake \
-      --es xyz.reo101.steamlesslink.extra.MODE uhid-raw >/dev/null
+    "$adb" -s "$adb_serial" shell wm dismiss-keyguard >/dev/null 2>&1 || true
+    "$adb" -s "$adb_serial" shell am instrument -w \
+      -e class xyz.reo101.steamlesslink.testing.BridgeAutomationInstrumentationTest \
+      -e remoteBridge true -e host "$bridge_host" -e port "$host_port" -e mode uhid-raw \
+      -e durationSeconds 300 \
+      "$package_name.test/androidx.test.runner.AndroidJUnitRunner" >"$workdir/forwarding.log" &
 
     ready_deadline=$((SECONDS + 45))
     while [ "$SECONDS" -lt "$ready_deadline" ]; do
@@ -154,7 +154,7 @@ writeShellApplication {
         fi
         exit 0
       fi
-      if printf '%s\n' "$logs" | grep -q 'AndroidRuntime'; then
+      if printf '%s\n' "$logs" | grep -q 'FATAL EXCEPTION'; then
         printf '%s\n' "$logs" >&2
         exit 1
       fi

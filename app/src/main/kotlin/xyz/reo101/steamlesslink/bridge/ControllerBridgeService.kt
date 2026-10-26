@@ -62,6 +62,7 @@ class ControllerBridgeService : Service() {
         val ticket = intent?.getStringExtra(EXTRA_IROH_TICKET).orEmpty()
         startForeground(NOTIFICATION_ID, notification("Starting $transport / $mode"))
         val invalid = when {
+            mode !in setOf(MODE_LOCAL_UINPUT_XBOX360, MODE_CAPTURE_TEST, MODE_UHID_RAW_IROH) && port !in 1..65535 -> "Use a TCP port from 1 to 65535"
             mode == MODE_UHID_RAW_IROH && ticket.isBlank() -> "Iroh endpoint ticket is required"
             mode !in setOf(MODE_LOCAL_UINPUT_XBOX360, MODE_UHID_RAW_IROH, MODE_CAPTURE_TEST) && host.isBlank() -> "Bridge host/IP is required"
             mode in setOf(MODE_UHID_GENERIC_GAMEPAD, MODE_UHID_EXTENDED_GAMEPAD, MODE_LOCAL_UINPUT_XBOX360) && !NativeProtocol.isAvailable -> "Bundled Zig protocol library failed to load"
@@ -101,8 +102,9 @@ class ControllerBridgeService : Service() {
                 when (mode) {
                     MODE_CAPTURE_TEST -> status(session, "Capture-only tester ready; no output device or remote connection")
                     MODE_LOCAL_UINPUT_XBOX360 -> {
-                        val output = LocalUinputXbox360Output.start(this) { status(session, it) }
-                        if (session.attach(output)) {
+                        val output = LocalUinputXbox360Output.start(this,
+                            onFailure = { failSession(session, it) }, onCreated = session::attach) { status(session, it) }
+                        if (isCurrent(session)) {
                             session.localOutput.set(output)
                             status(session, "Connected to local uinput; forwarding mapped Xbox 360 reports")
                         }
@@ -146,8 +148,8 @@ class ControllerBridgeService : Service() {
 
     private fun runRawBridge(session: BridgeSession, host: String, port: Int, ticket: String) {
         val capture = session.transport ?: return
-        val wifi = if (session.mode == MODE_UHID_RAW_IROH) null else wifiNetwork()
         while (isCurrent(session)) {
+            val wifi = if (session.mode == MODE_UHID_RAW_IROH) null else wifiNetwork()
             var raw: UhidRawClient? = null
             var connection: RawUhidConnection? = null
             var socket: Socket? = null
@@ -213,6 +215,7 @@ class ControllerBridgeService : Service() {
         if (state != null && now - session.lastReportStatusAtMs >= 1000) {
             session.lastReportStatusAtMs = now
             status(session, "Triton reports: count=${session.reportCount} id=0x%02x seq=${state.sequence} buttons=0x%08x len=$length".format(state.reportId, state.buttons.toLong()))
+            raw?.let { status(session, "Steamless Link metrics: ${it.statistics()}") }
         }
         if (raw == null && session.localOutput.get() == null && session.mode != MODE_CAPTURE_TEST && now - session.lastDroppedStatusAtMs >= 5000) {
             session.lastDroppedStatusAtMs = now
@@ -340,7 +343,7 @@ class ControllerBridgeService : Service() {
         private const val DEFAULT_PORT = 3244
         private const val CHANNEL_ID = "controller_bridge_quiet"
         private const val NOTIFICATION_ID = 1001
-        private const val BLE_READY_TIMEOUT_MS = 12_000L
+        private const val BLE_READY_TIMEOUT_MS = 25_000L
         private const val USB_READY_TIMEOUT_MS = 30_000L
         private const val RAW_CONNECTION_WAIT_MS = 500L
         private const val RAW_RECONNECT_DELAY_MS = 2_000L
@@ -348,7 +351,7 @@ class ControllerBridgeService : Service() {
         private val resourceCloser = Executors.newCachedThreadPool { Thread(it, "bridge-resource-close").apply { isDaemon = true } }
         private val DIAGNOSTIC_NOTIFICATION_PREFIXES = listOf(
             "Triton reports:", "BLE MTU changed", "BLE notifications:", "Dropped queued", "Enabling BLE notifications for", "Ignoring BLE report",
-            "UHID get-report", "UHID output report", "UHID set-report", "Steamless Link frame", "Steamless Link get-report",
+            "UHID get-report", "UHID output report", "UHID set-report", "Steamless Link frame", "Steamless Link metrics:", "Steamless Link get-report",
             "Steamless Link output report", "Steamless Link set-report", "Valve char",
         )
         private const val TAG = "ControllerBridge"

@@ -19,7 +19,10 @@ fun irohRawUhidConnection(
     onStatus: (String) -> Unit = {},
 ): RawUhidConnection {
     IrohAndroid.installAndroidContext(context.applicationContext)
-    val endpoint = runBlocking { Endpoint.bind(EndpointOptions(preset = presetN0(), relayMode = RelayMode.defaultMode())) }
+    val identity = IrohIdentity.secretKey(context)
+    val endpoint = runBlocking { withTimeout(connectTimeoutMs) {
+        Endpoint.bind(EndpointOptions(preset = presetN0(), relayMode = RelayMode.defaultMode(), secretKey = identity))
+    } }
     var closeConnection: (() -> Unit)? = null
     try {
         val addr = EndpointTicket.fromString(ticket.trim()).endpointAddr()

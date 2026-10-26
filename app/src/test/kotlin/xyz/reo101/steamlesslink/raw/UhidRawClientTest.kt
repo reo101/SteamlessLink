@@ -24,6 +24,25 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class UhidRawClientTest {
+    @Test fun stalledWriterBoundsQueueAndCountsDroppedSamples() {
+        val writing = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val input = object : InputStream() {
+            override fun read(): Int { closed.await(); return -1 }
+        }
+        val output = object : OutputStream() {
+            override fun write(value: Int) { writing.countDown(); closed.await() }
+        }
+        UhidRawClient(RawUhidConnection(input, output) { closed.countDown() }, {},
+            { _, _, _, _ -> null }, { _, _, _, _, _ -> false }, { _, _, _ -> false }).use { client ->
+            assertTrue(client.sendInputReport(byteArrayOf(1)))
+            assertTrue(writing.await(1, TimeUnit.SECONDS))
+            repeat(20) { assertTrue(client.sendInputReport(byteArrayOf(it.toByte()))) }
+            assertEquals(12L, client.statistics().droppedSamples)
+            assertEquals(0L, client.statistics().sentSamples)
+        }
+    }
+
     @Test fun connectionsCloseExactlyOnceAndAbortedConnectsDisposeTheirSocket() {
         var closes = 0
         val connection = RawUhidConnection(ByteArrayInputStream(ByteArray(0)), ByteArrayOutputStream()) { closes++ }

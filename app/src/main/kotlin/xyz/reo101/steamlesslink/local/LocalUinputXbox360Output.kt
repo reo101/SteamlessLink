@@ -9,12 +9,49 @@ import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class LocalUinputXbox360Output internal constructor(
     private val process: Process,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private val output = process.outputStream.buffered()
+    private val readiness = CountDownLatch(1)
+    private val ready = AtomicBoolean(false)
+
+    internal fun awaitReady(timeoutMs: Long, onStatus: (String) -> Unit = {}, onFailure: (String) -> Unit = {}) {
+        fun drain(stream: java.io.InputStream, name: String) {
+            Thread({
+                runCatching { stream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        if (line == "steamless-uinput: ready" && !closed.get()) {
+                            ready.set(true)
+                            readiness.countDown()
+                        }
+                        onStatus("uinput: $line")
+                    }
+                } }
+            }, name).apply { isDaemon = true }.start()
+        }
+        drain(process.errorStream, "uinput-helper-stderr")
+        drain(process.inputStream, "uinput-helper-stdout")
+        Thread({
+            val exit = process.waitFor()
+            if (!closed.get()) {
+                onFailure("Local uinput helper exited with status $exit")
+                close()
+            }
+        }, "uinput-helper-exit").apply { isDaemon = true }.start()
+        try {
+            if (!readiness.await(timeoutMs, TimeUnit.MILLISECONDS) || !ready.get() || closed.get()) {
+                throw IOException("Local uinput helper did not become ready")
+            }
+        } catch (error: Exception) {
+            close()
+            throw error
+        }
+    }
 
     @Synchronized
     fun sendPacket(packet: ByteArray) {
@@ -26,6 +63,7 @@ class LocalUinputXbox360Output internal constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        readiness.countDown()
         // Terminate the reader before closing a pipe whose writer can be blocked.
         runCatching { process.destroy() }
         runCatching { output.close() }
@@ -34,11 +72,23 @@ class LocalUinputXbox360Output internal constructor(
     companion object {
         private const val HELPER_NAME = "steamless-uinput-gamepad"
 
-        fun start(context: Context, onStatus: (String) -> Unit): LocalUinputXbox360Output {
+        fun start(
+            context: Context,
+            onFailure: (String) -> Unit = {},
+            onCreated: (LocalUinputXbox360Output) -> Boolean = { true },
+            onStatus: (String) -> Unit,
+        ): LocalUinputXbox360Output {
             val helper = extractHelper(context)
             val process = startWithShizuku(helper, onStatus) ?: startWithSu(helper, onStatus)
-            drainProcessLogs(process, onStatus)
-            return LocalUinputXbox360Output(process)
+            val output = LocalUinputXbox360Output(process)
+            try {
+                if (!onCreated(output)) throw IOException("Session stopped during helper startup")
+                output.awaitReady(5000, onStatus, onFailure)
+                return output
+            } catch (error: Exception) {
+                output.close()
+                throw error
+            }
         }
 
         private fun extractHelper(context: Context): File {
@@ -93,17 +143,5 @@ class LocalUinputXbox360Output internal constructor(
             }
         }
 
-        private fun drainProcessLogs(process: Process, onStatus: (String) -> Unit) {
-            Thread({
-                process.errorStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line -> onStatus("uinput: $line") }
-                }
-            }, "uinput-helper-stderr").apply { isDaemon = true }.start()
-            Thread({
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line -> onStatus("uinput: $line") }
-                }
-            }, "uinput-helper-stdout").apply { isDaemon = true }.start()
-        }
     }
 }

@@ -82,6 +82,12 @@ in
         description = "Package providing the steamless-link-iroh-proxy executable.";
       };
 
+      allowedPeers = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Allowed Iroh controller endpoint IDs. Copy each ID from the Android app. An empty list is rejected.";
+      };
+
       targetHost = lib.mkOption {
         type = lib.types.str;
         default = "127.0.0.1";
@@ -113,6 +119,10 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = !cfg.iroh.enable || cfg.iroh.allowedPeers != [ ];
+        message = "Set services.steamless-link-host.iroh.allowedPeers before enabling Iroh.";
+      }
+      {
         assertion = !cfg.iroh.enable || cfg.iroh.package != null;
         message = "services.steamless-link-host.iroh.package must be set when services.steamless-link-host.iroh.enable is true.";
       }
@@ -138,14 +148,14 @@ in
       };
       serviceConfig = {
         Type = "simple";
-        ExecStart = lib.escapeShellArgs [
+        ExecStart = lib.escapeShellArgs ([
           "${cfg.iroh.package}/bin/steamless-link-iroh-proxy"
           "--identity-key"
           "${irohStateDirectory}/identity.key"
           "--ticket-file"
           "${irohStateDirectory}/ticket"
           "${cfg.iroh.targetHost}:${toString (if cfg.iroh.targetPort == null then cfg.listenPort else cfg.iroh.targetPort)}"
-        ];
+        ] ++ lib.concatMap (peer: [ "--allow-peer" peer ]) cfg.iroh.allowedPeers);
         StateDirectory = "steamless-link-iroh-proxy";
         StateDirectoryMode = "0700";
         UMask = "0077";

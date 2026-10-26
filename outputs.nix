@@ -279,46 +279,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
               }
               ''
                 set -euo pipefail
-                proxy=${lib.getExe self'.packages.steamless-link-iroh-proxy}
-                tmp=$(mktemp -d)
-                cleanup() { jobs -pr | xargs -r kill 2>/dev/null || true; rm -rf "$tmp"; }
-                trap cleanup EXIT
-
-                python -u - "$tmp/ports" <<'PY' &
-                import socket, sys
-                ports_file=sys.argv[1]
-                target=socket.socket(); target.bind(('127.0.0.1',0)); target.listen()
-                iroh=socket.socket(); iroh.bind(('127.0.0.1',0))
-                open(ports_file,'w').write(f'{target.getsockname()[1]} {iroh.getsockname()[1]}\n')
-                iroh.close()
-                while True:
-                    conn,_=target.accept()
-                    while True:
-                        data=conn.recv(65536)
-                        if not data: break
-                        conn.sendall(data)
-                    conn.close()
-                PY
-
-                while [ ! -s "$tmp/ports" ]; do sleep 0.05; done
-                read target_port iroh_port < "$tmp/ports"
-                identity="$tmp/identity.key"
-                STEAMLESS_IROH_BIND_ADDR="127.0.0.1:$iroh_port" "$proxy" --identity-key "$identity" "127.0.0.1:$target_port" >"$tmp/ticket" 2>"$tmp/proxy.log" &
-                proxy_pid=$!
-                for i in $(seq 1 100); do [ -s "$tmp/ticket" ] && break; sleep 0.1; done
-                test -s "$tmp/ticket"
-                ticket=$(head -n1 "$tmp/ticket")
-                test "$(stat -c %a "$identity")" = 600
-                test "$(stat -c %s "$identity")" = 32
-
-                kill "$proxy_pid"
-                wait "$proxy_pid" || true
-                sleep 0.1
-                STEAMLESS_IROH_BIND_ADDR="127.0.0.1:$iroh_port" "$proxy" --identity-key "$identity" "127.0.0.1:$target_port" >"$tmp/restarted-ticket" 2>>"$tmp/proxy.log" &
-                for i in $(seq 1 100); do [ -s "$tmp/restarted-ticket" ] && break; sleep 0.1; done
-                test -s "$tmp/restarted-ticket"
-                printf steamless-iroh-ok | STEAMLESS_IROH_BIND_ADDR=127.0.0.1:0 timeout 30 "$proxy" connect "$ticket" >"$tmp/out"
-                test "$(cat "$tmp/out")" = steamless-iroh-ok
+                python ${./nix/tests/iroh-proxy.py} ${lib.getExe self'.packages.steamless-link-iroh-proxy}
                 touch $out
               '';
           steamless-link-host-nixos = pkgs.testers.runNixOSTest (

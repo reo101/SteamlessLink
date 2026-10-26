@@ -192,9 +192,9 @@ pub fn mapTritonToInput(report: []const u8, out: []u8) triton.Error!void {
         .buttons = buttons,
         .hat = basic[3],
         .x = basic[4],
-        .y = 255 - basic[5],
+        .y = basic[5],
         .rx = basic[6],
-        .ry = 255 - basic[7],
+        .ry = basic[7],
         .z = basic[8],
         .rz = basic[9],
     }, out);
@@ -222,6 +222,29 @@ pub fn mapTritonToInput(report: []const u8, out: []u8) triton.Error!void {
             .y = scaled[1],
             .z = scaled[2],
         }, out[offset..]);
+    }
+}
+
+test "all report layouts share HID stick directions and preserve Xbox convention" {
+    for ([_]u8{ 0x42, 0x45, 0x47 }) |id| {
+        for ([_]i16{ -32768, 0, 32767 }, [_]u8{ 255, 127, 0 }) |input, expected_y| {
+            var report: [46]u8 = @splat(0);
+            report[0] = id;
+            std.mem.writeInt(i16, report[12..14], input, .little);
+            std.mem.writeInt(i16, report[16..18], input, .little);
+            var basic: [generic.INPUT_REPORT_SIZE]u8 = undefined;
+            var extended: [PACKET_SIZE]u8 = undefined;
+            var xbox: [triton.XBOX360_PACKET_SIZE]u8 = undefined;
+            try generic.mapTritonToInput(&report, &basic);
+            try mapTritonToInput(&report, &extended);
+            try triton.mapTritonToXbox360(&report, &xbox);
+            try std.testing.expectEqual(expected_y, basic[5]);
+            try std.testing.expectEqual(expected_y, basic[7]);
+            try std.testing.expectEqual(expected_y, extended[7]);
+            try std.testing.expectEqual(expected_y, extended[9]);
+            try std.testing.expectEqual(input, std.mem.readInt(i16, xbox[8..10], .little));
+            try std.testing.expectEqual(input, std.mem.readInt(i16, xbox[12..14], .little));
+        }
     }
 }
 

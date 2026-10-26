@@ -62,6 +62,7 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$out"
     install -m644 app/build/outputs/apk/debug/app-debug.apk "$out/app-debug.apk"
     install -m644 app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$out/app-debug-androidTest.apk"
+    printf 'version=%s\nsource=%s\n' '${finalAttrs.version}' '${finalAttrs.src}' > "$out/build-info.txt"
     runHook postInstall
   '';
   meta = {

@@ -20,7 +20,6 @@ const UhidDevice = uhid.Device;
 
 const Allocator = std.mem.Allocator;
 const AtomicBool = std.atomic.Value(bool);
-const AtomicFd = std.atomic.Value(c_int);
 
 const UHID_START = uhid.START;
 const UHID_STOP = uhid.STOP;
@@ -52,7 +51,12 @@ const Config = struct {
 
 const Frame = protocol.Frame;
 
-var active_client_fd = AtomicFd.init(-1);
+var active_client_fd: c_int = -1;
+var client_fd_mutex: std.Io.Mutex = .init;
+var startup_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+
+const STARTUP_PHASE_TIMEOUT_NS = 30 * std.time.ns_per_s;
+const MAX_STARTUP_CONNECTIONS = 32;
 
 pub fn main(init: std.process.Init) !void {
     _ = c.signal(c.SIGPIPE, c.SIG_IGN);
@@ -155,7 +159,15 @@ fn runServer(io: std.Io, allocator: Allocator, config: *const Config) !void {
             log.warn("accept failed: {s}", .{@errorName(err)});
             continue;
         };
+        const startup_count = startup_connections.fetchAdd(1, .acq_rel);
+        if (startup_count >= MAX_STARTUP_CONNECTIONS) {
+            _ = startup_connections.fetchSub(1, .acq_rel);
+            log.warn("rejected startup connection: too many incomplete connections", .{});
+            closeFd(conn_fd);
+            continue;
+        }
         const thread = std.Thread.spawn(.{}, handleClientThread, .{ conn_fd, config, io }) catch |err| {
+            _ = startup_connections.fetchSub(1, .acq_rel);
             log.warn("client thread spawn failed: {s}", .{@errorName(err)});
             closeFd(conn_fd);
             continue;
@@ -170,15 +182,21 @@ fn handleClientThread(conn_fd: c_int, config: *const Config, io: std.Io) void {
     };
 }
 
-fn replaceActiveClient(conn_fd: c_int) void {
-    const old_fd = active_client_fd.swap(conn_fd, .acq_rel);
-    if (old_fd >= 0 and old_fd != conn_fd) {
-        _ = c.shutdown(old_fd, c.SHUT_RDWR);
+fn replaceActiveClient(conn_fd: c_int, io: std.Io) void {
+    client_fd_mutex.lockUncancelable(io);
+    defer client_fd_mutex.unlock(io);
+    // The previous owner cannot close/reuse this descriptor during shutdown.
+    if (active_client_fd >= 0 and active_client_fd != conn_fd) {
+        _ = c.shutdown(active_client_fd, c.SHUT_RDWR);
     }
+    active_client_fd = conn_fd;
 }
 
-fn clearActiveClient(conn_fd: c_int) void {
-    _ = active_client_fd.cmpxchgStrong(conn_fd, -1, .acq_rel, .acquire);
+fn closeClient(conn_fd: c_int, io: std.Io) void {
+    client_fd_mutex.lockUncancelable(io);
+    defer client_fd_mutex.unlock(io);
+    if (active_client_fd == conn_fd) active_client_fd = -1;
+    closeFd(conn_fd);
 }
 
 fn createListener(allocator: Allocator, config: *const Config) !c_int {
@@ -229,18 +247,20 @@ fn acceptClient(server_fd: c_int) !c_int {
 }
 
 fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
-    var active = false;
+    var startup_phase = true;
     defer {
-        if (active) clearActiveClient(conn_fd);
-        closeFd(conn_fd);
+        if (startup_phase) _ = startup_connections.fetchSub(1, .acq_rel);
+        closeClient(conn_fd, io);
     }
 
     var one: c_int = 1;
     _ = c.setsockopt(conn_fd, c.IPPROTO_TCP, c.TCP_NODELAY, &one, @sizeOf(c_int));
     log.info("client connected fd={d}", .{conn_fd});
 
+    const startup_deadline_ns = monotonicNs() + STARTUP_PHASE_TIMEOUT_NS;
+
     var payload_buf: [MAX_FRAME_PAYLOAD]u8 = undefined;
-    var pending_frame: ?Frame = (try readFrame(conn_fd, &payload_buf)) orelse return;
+    var pending_frame: ?Frame = (try readFrameWithDeadline(conn_fd, &payload_buf, startup_deadline_ns)) orelse return;
     if (pending_frame.?.frame_type == .get_iroh_ticket) {
         if (pending_frame.?.payload.len != 0) {
             log.warn("invalid Iroh ticket request", .{});
@@ -259,28 +279,36 @@ fn handleClient(conn_fd: c_int, config: *const Config, io: std.Io) !void {
         return;
     }
 
-    replaceActiveClient(conn_fd);
-    active = true;
-
     const bundled = pending_frame.?.frame_type == .device_bundle;
     var infos: [protocol.MAX_DEVICES]DeviceInfo = undefined;
     var bundle_infos: []DeviceInfo = &.{};
     var device_info: ?DeviceInfo = null;
     if (bundled) {
-        bundle_infos = protocol.decodeDeviceBundle(pending_frame.?.payload, &infos) orelse return error.InvalidDeviceBundle;
+        bundle_infos = protocol.decodeDeviceBundle(pending_frame.?.payload, &infos) orelse {
+            log.warn("invalid device bundle", .{});
+            return error.InvalidDeviceBundle;
+        };
         pending_frame = null;
     } else if (pending_frame.?.frame_type == .device_info) {
         const info = decodeDeviceInfo(pending_frame.?.payload) orelse {
             log.warn("invalid device-info frame", .{});
-            return;
+            return error.InvalidDeviceInfo;
         };
         if (info.bus > std.math.maxInt(u16)) {
             log.warn("unsupported HID bus 0x{x}", .{info.bus});
-            return;
+            return error.UnsupportedHidBus;
         }
         device_info = info;
         pending_frame = null;
     }
+
+    if (pending_frame) |frame| {
+        if (frame.frame_type != .input or frame.payload.len == 0 or frame.payload.len > UHID_DATA_MAX) return error.InvalidInitialFrame;
+    }
+
+    startup_phase = false;
+    _ = startup_connections.fetchSub(1, .acq_rel);
+    replaceActiveClient(conn_fd, io);
 
     var devices: [protocol.MAX_DEVICES]UhidDevice = undefined;
     var device_count: usize = 0;
@@ -509,10 +537,14 @@ fn sendFrame(fd: c_int, frame_type: protocol.FrameType, payload: []const u8) !vo
 }
 
 fn readFrame(fd: c_int, payload_buf: *[MAX_FRAME_PAYLOAD]u8) !?Frame {
+    return readFrameWithDeadline(fd, payload_buf, null);
+}
+
+fn readFrameWithDeadline(fd: c_int, payload_buf: *[MAX_FRAME_PAYLOAD]u8, deadline: ?i128) !?Frame {
     var header: [protocol.FRAME_HEADER_SIZE]u8 = undefined;
-    if (!try recvExact(fd, &header)) return null;
+    if (!try recvExact(fd, &header, deadline)) return null;
     const decoded = protocol.decodeFrameHeader(&header) orelse unreachable;
-    if (!try recvExact(fd, payload_buf[0..decoded.payload_len])) return null;
+    if (!try recvExact(fd, payload_buf[0..decoded.payload_len], deadline)) return null;
     return .{ .frame_type = decoded.frame_type, .payload = payload_buf[0..decoded.payload_len] };
 }
 
@@ -526,9 +558,21 @@ fn readIrohTicket(io: std.Io, path: []const u8, buffer: *[MAX_FRAME_PAYLOAD]u8) 
     return ticket;
 }
 
-fn recvExact(fd: c_int, out: []u8) !bool {
+fn recvExact(fd: c_int, out: []u8, deadline: ?i128) !bool {
     var offset: usize = 0;
     while (offset < out.len) {
+        if (deadline) |end| {
+            const remaining = end - monotonicNs();
+            if (remaining <= 0) return error.StartupTimeout;
+            var pollfd = c.struct_pollfd{ .fd = fd, .events = c.POLLIN, .revents = 0 };
+            const milliseconds: c_int = @intCast(@min(std.math.maxInt(c_int), @divFloor(remaining + std.time.ns_per_ms - 1, std.time.ns_per_ms)));
+            const result = c.poll(&pollfd, 1, milliseconds);
+            if (result == 0) return error.StartupTimeout;
+            if (result < 0) {
+                if (std.c.errno(result) == .INTR) continue;
+                return error.PollFailed;
+            }
+        }
         const read = try readFd(fd, out[offset..]);
         if (read == 0) return false;
         offset += read;
@@ -568,4 +612,54 @@ test "device info decoder preserves descriptor" {
 
 test {
     _ = uhid;
+}
+
+fn testSocketPair() ![2]c_int {
+    var descriptors: [2]c_int = undefined;
+    if (c.socketpair(c.AF_UNIX, c.SOCK_STREAM, 0, &descriptors) != 0) return error.SocketCreateFailed;
+    return descriptors;
+}
+
+test "replacement shuts down old socket without closing the successor" {
+    const first = try testSocketPair();
+    defer closeFd(first[1]);
+    const second = try testSocketPair();
+    defer closeFd(second[1]);
+    replaceActiveClient(first[0], std.testing.io);
+    replaceActiveClient(second[0], std.testing.io);
+    var byte: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try readFd(first[1], &byte));
+    closeClient(first[0], std.testing.io);
+    defer closeClient(second[0], std.testing.io);
+    try std.testing.expectEqual(second[0], active_client_fd);
+    try writeAllFd(second[1], &.{42});
+    try std.testing.expectEqual(@as(usize, 1), try readFd(second[0], &byte));
+    try std.testing.expectEqual(@as(u8, 42), byte[0]);
+}
+
+test "incomplete frame expires at startup deadline" {
+    const pair = try testSocketPair();
+    defer for (pair) |fd| closeFd(fd);
+    try writeAllFd(pair[1], &.{1}); // Only part of the header arrives.
+    var payload: [MAX_FRAME_PAYLOAD]u8 = undefined;
+    try std.testing.expectError(error.StartupTimeout, readFrameWithDeadline(pair[0], &payload, monotonicNs() + 20 * std.time.ns_per_ms));
+}
+
+test "invalid initial metadata does not replace the active client" {
+    const active = try testSocketPair();
+    defer closeFd(active[1]);
+    replaceActiveClient(active[0], std.testing.io);
+    defer closeClient(active[0], std.testing.io);
+    for ([_]protocol.FrameType{ .device_info, .device_bundle, .output }) |frame_type| {
+        const candidate = try testSocketPair();
+        defer closeFd(candidate[1]);
+        try sendFrame(candidate[1], frame_type, &.{});
+        startup_connections.store(1, .monotonic);
+        handleClient(candidate[0], &Config{}, std.testing.io) catch {};
+        try std.testing.expectEqual(@as(u32, 0), startup_connections.load(.monotonic));
+        try std.testing.expectEqual(active[0], active_client_fd);
+        try writeAllFd(active[1], &.{7});
+        var byte: [1]u8 = undefined;
+        try std.testing.expectEqual(@as(usize, 1), try readFd(active[0], &byte));
+    }
 }

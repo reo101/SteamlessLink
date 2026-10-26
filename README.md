@@ -43,9 +43,10 @@ nix develop -c gradle :app:check
 nix develop -c gradle :app:installDebug
 ```
 
-CI builds `.#android-apk` in the Nix sandbox. Weekly and opt-in integration jobs
-run the emulator instrumentation suite, all remote profiles, Iroh, and Linux
-kernel tests. Physical USB and privileged Android tests remain opt-in.
+CI builds `.#android-apk` in the Nix sandbox. Relevant source changes select
+emulator and Linux kernel integration jobs. Weekly and opt-in runs execute the
+full matrix. See [validation and measurements](docs/VALIDATION.md) and the
+[release procedure](docs/RELEASE.md). Physical USB and privileged Android tests remain opt-in.
 `devShells.build` omits language servers and developer diagnostics. The default
 shell extends it with those tools; both share the SDK, Zig, Gradle, and JNI configuration.
 The flake uses Zig 0.17.0 for Android and Linux builds, with ZLS 0.17.0 in the
@@ -124,8 +125,9 @@ nix run .#android-emulator-link-test
 ```
 
 That command uses the Nix-built app and test APKs, boots a headless Android emulator,
-runs the instrumentation suite, then starts the app in
-fake controller mode through `MainActivity` and checks raw `0x45` input frames.
+runs the instrumentation suite, then uses the test APK to start fake controller
+mode and checks raw `0x45` input frames. Exported activity requests require
+confirmation; they cannot silently start or replace a bridge.
 
 To exercise the generic profile's device-info frame and its 10-byte HID reports
 instead:
@@ -275,17 +277,27 @@ export IROH_JNI=$(nix build --print-out-paths .#iroh-android-jni)
 nix develop -c gradle :app:assembleDebug
 ```
 
-On the Steam host, run the host service, then run the Iroh proxy and paste its
-printed endpoint ticket into the Android app's `Iroh endpoint ticket` field:
+In Android, tap **Show Iroh controller ID**. The app copies its public ID.
+Its private identity remains in app-private, non-backed-up storage and survives
+connection and process restarts. Uninstalling the app removes that identity.
+
+On the Steam host, allow that controller ID, run the host service, then run the
+Iroh proxy and paste its endpoint ticket into Android's `Iroh endpoint ticket` field:
 
 ```sh
 steamless-link-host --listen-host 127.0.0.1 --listen-port 3244
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/steamless-link-iroh-proxy"
 install -d -m 700 "$state_dir"
-nix run .#steamless-link-iroh-proxy -- --identity-key "$state_dir/identity.key" --ticket-file "$state_dir/ticket" 127.0.0.1:3244
+nix run .#steamless-link-iroh-proxy -- \
+  --identity-key "$state_dir/identity.key" --ticket-file "$state_dir/ticket" \
+  --allow-peer "$CONTROLLER_ID" 127.0.0.1:3244
 ```
 
-The identity key is 32 secret bytes, mode `0600`. `STEAMLESS_IROH_IDENTITY_KEY`
+Repeat `--allow-peer` for each authorized controller. An empty allowlist is
+rejected. Unknown peers cannot open a TCP connection to the host. An Iroh ticket
+provides routing information; it does not grant controller access.
+
+The host identity key is 32 secret bytes, mode `0600`. `STEAMLESS_IROH_IDENTITY_KEY`
 sets the same path for service managers; `--identity-key` takes precedence.
 `--ticket-file` (or `STEAMLESS_IROH_TICKET_FILE`) writes the current ticket as a
 private file for the host's raw-TCP bootstrap action. Reuse the identity key
@@ -307,7 +319,10 @@ services.steamless-link-host = {
   listenHost = "127.0.0.1";
   listenPort = 3244;
 
-  iroh.enable = true;
+  iroh = {
+    enable = true;
+    allowedPeers = [ "CONTROLLER_PUBLIC_ID" ];
+  };
 };
 ```
 
@@ -353,6 +368,7 @@ From a flake-based NixOS config:
 
             iroh = {
               enable = true;
+              allowedPeers = [ "CONTROLLER_PUBLIC_ID" ];
               package = steamlesslink.packages.${pkgs.system}.steamless-link-iroh-proxy;
             };
           };

@@ -81,9 +81,9 @@ pub fn mapTritonToInput(report: []const u8, out_report: []u8) Error!void {
     std.mem.writeInt(u16, out_report[1..3], mapButtons(state.buttons), .little);
     out_report[3] = mapHat(state.buttons);
     out_report[4] = scaleAxis(state.left_stick_x);
-    out_report[5] = scaleAxis(state.left_stick_y);
+    out_report[5] = 255 - scaleAxis(state.left_stick_y);
     out_report[6] = scaleAxis(state.right_stick_x);
-    out_report[7] = scaleAxis(state.right_stick_y);
+    out_report[7] = 255 - scaleAxis(state.right_stick_y);
     out_report[8] = scaleTrigger(state.left_trigger);
     out_report[9] = scaleTrigger(state.right_trigger);
 }
@@ -154,7 +154,9 @@ test "maps Triton reports to a standard HID gamepad report" {
 
     var packet: [INPUT_REPORT_SIZE]u8 = @splat(0xaa);
     try mapTritonToInput(&report, &packet);
-    try std.testing.expectEqualSlices(u8, &.{ 0x01, 0xd1, 0x3c, 0x01, 0x00, 0xff, 0x80, 0x00, 0x00, 0xff }, &packet);
+    // Y-axes are inverted for HID standard (positive-down):
+    // Triton +32767 (up) → 0x00 (up in HID), Triton -32768 (down) → 0xff (down in HID)
+    try std.testing.expectEqualSlices(u8, &.{ 0x01, 0xd1, 0x3c, 0x01, 0x00, 0x00, 0x80, 0xff, 0x00, 0xff }, &packet);
 }
 
 test "generic gamepad rejects invalid buffers" {

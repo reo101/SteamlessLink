@@ -2,6 +2,7 @@ package xyz.reo101.steamlesslink
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -28,6 +29,12 @@ import android.widget.Toast
 import rikka.shizuku.Shizuku
 import xyz.reo101.steamlesslink.bridge.ControllerBridgeService
 import xyz.reo101.steamlesslink.raw.fetchIrohTicket
+import xyz.reo101.steamlesslink.raw.IrohIdentity
+import xyz.reo101.steamlesslink.raw.normalizeHost
+import java.net.Socket
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicReference
 import xyz.reo101.steamlesslink.usb.UsbTritonTransport
 
 class MainActivity : Activity() {
@@ -38,7 +45,11 @@ class MainActivity : Activity() {
     private lateinit var irohTicketInput: EditText
     private lateinit var modeSpinner: Spinner
     private lateinit var transportSwitch: Switch
-    private var irohBootstrapInProgress = false
+    private val bootstrapExecutor = Executors.newSingleThreadExecutor { Thread(it, "iroh-ticket-bootstrap") }
+    private var bootstrapTask: Future<*>? = null
+    private val bootstrapSocket = AtomicReference<Socket?>(null)
+    private var bootstrapGeneration = 0L
+    private var startConfirmation: AlertDialog? = null
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val message = intent?.getStringExtra(ControllerBridgeService.EXTRA_STATUS) ?: return
@@ -100,6 +111,18 @@ class MainActivity : Activity() {
             setText(prefs.getString(PREF_IROH_TICKET, ""))
         }
         root.addView(irohTicketInput)
+        root.addView(Button(this).apply {
+            text = "Show Iroh controller ID"
+            setOnClickListener {
+                runCatching { IrohIdentity.publicId(this@MainActivity) }
+                    .onSuccess { id ->
+                        val clipboard = getSystemService(android.content.ClipboardManager::class.java)
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Iroh controller ID", id))
+                        appendStatus("Iroh controller ID (copied): $id\nAdd this ID to the host allowlist.")
+                    }
+                    .onFailure { appendStatus("Iroh identity unavailable: ${it.message}") }
+            }
+        })
 
         modeSpinner = Spinner(this).apply {
             minimumHeight = dp(56)
@@ -112,6 +135,7 @@ class MainActivity : Activity() {
             setSelection(modeIndex(prefs.getString(PREF_MODE, ControllerBridgeService.MODE_UHID_RAW)))
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    cancelBootstrap()
                     prefs.edit().putString(PREF_MODE, selectedMode()).apply()
                     updateInputAvailability()
                 }
@@ -125,6 +149,7 @@ class MainActivity : Activity() {
             text = if (prefs.getBoolean(PREF_TRANSPORT_USB, false)) "Transport: USB" else "Transport: BLE"
             isChecked = prefs.getBoolean(PREF_TRANSPORT_USB, false)
             setOnCheckedChangeListener { _, checked ->
+                cancelBootstrap()
                 text = if (checked) "Transport: USB" else "Transport: BLE"
                 prefs.edit().putBoolean(PREF_TRANSPORT_USB, checked).apply()
             }
@@ -141,7 +166,10 @@ class MainActivity : Activity() {
         })
         buttonRow.addView(Button(this).apply {
             text = "Stop"
-            setOnClickListener { stopService(Intent(this@MainActivity, ControllerBridgeService::class.java)) }
+            setOnClickListener {
+                cancelBootstrap()
+                stopService(Intent(this@MainActivity, ControllerBridgeService::class.java))
+            }
         })
         root.addView(buttonRow)
         root.addView(Button(this).apply {
@@ -176,7 +204,23 @@ class MainActivity : Activity() {
 
     private fun maybeStartBridgeFromIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) != true) return
-        val host = sanitizeHost(intent.getStringExtra(ControllerBridgeService.EXTRA_HOST).orEmpty())
+        intent.removeExtra(EXTRA_AUTOSTART)
+        val request = Intent(intent)
+        startConfirmation?.dismiss()
+        startConfirmation = AlertDialog.Builder(this)
+            .setTitle("Start controller bridge?")
+            .setMessage("An activity request supplied a bridge destination. This replaces the active bridge.\n\n" +
+                "Host: ${request.getStringExtra(ControllerBridgeService.EXTRA_HOST).orEmpty()}:${request.getIntExtra(ControllerBridgeService.EXTRA_PORT, DEFAULT_RAW_UHID_PORT)}\n" +
+                "Mode: ${request.getStringExtra(ControllerBridgeService.EXTRA_MODE).orEmpty()}\n" +
+                "Transport: ${request.getStringExtra(ControllerBridgeService.EXTRA_TRANSPORT).orEmpty()}\n" +
+                "Iroh ticket: ${request.getStringExtra(ControllerBridgeService.EXTRA_IROH_TICKET).orEmpty()}")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Start") { _, _ -> startConfirmedRequest(request) }
+            .show()
+    }
+
+    private fun startConfirmedRequest(intent: Intent) {
+        val host = normalizeHost(intent.getStringExtra(ControllerBridgeService.EXTRA_HOST).orEmpty())
         val mode = intent.getStringExtra(ControllerBridgeService.EXTRA_MODE) ?: ControllerBridgeService.MODE_UHID_RAW
         if (::modeSpinner.isInitialized) modeSpinner.setSelection(modeIndex(mode))
         val transport = intent.getStringExtra(ControllerBridgeService.EXTRA_TRANSPORT) ?: ControllerBridgeService.TRANSPORT_BLE
@@ -193,8 +237,9 @@ class MainActivity : Activity() {
     }
 
     private fun startBridge(transport: String, mode: String) {
+        cancelBootstrap()
         prefs.edit().putString(PREF_MODE, mode).apply()
-        val host = sanitizeHost(hostInput.text.toString())
+        val host = normalizeHost(hostInput.text.toString())
         val irohTicket = irohTicketInput.text.toString().trim()
         if (mode == ControllerBridgeService.MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
             statusText.text = "Enter the Iroh endpoint ticket first.\n\n${statusText.text}"
@@ -215,6 +260,11 @@ class MainActivity : Activity() {
     }
 
     private fun startBridge(host: String, port: Int, transport: String, mode: String, irohTicket: String = "") {
+        cancelBootstrap()
+        if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360 && port !in 1..65535) {
+            appendStatus("Use a TCP port from 1 to 65535")
+            return
+        }
         if (mode == ControllerBridgeService.MODE_UHID_RAW_IROH && irohTicket.isBlank()) {
             statusText.text = "Enter the Iroh endpoint ticket first.\n\n${statusText.text}"
             return
@@ -255,20 +305,24 @@ class MainActivity : Activity() {
     }
 
     private fun fetchAndStartIroh(transport: String = selectedTransport()) {
-        if (irohBootstrapInProgress) return
-        val host = sanitizeHost(hostInput.text.toString())
+        cancelBootstrap()
+        val host = normalizeHost(hostInput.text.toString())
         val port = portInput.text.toString().toIntOrNull() ?: DEFAULT_RAW_UHID_PORT
         if (host.isBlank()) {
             statusText.text = "Enter the raw TCP bridge host/IP first.\n\n${statusText.text}"
             return
         }
-        irohBootstrapInProgress = true
+        if (port !in 1..65535) { appendStatus("Use a TCP port from 1 to 65535"); return }
+        val generation = bootstrapGeneration
         appendStatus("Fetching Iroh ticket from $host:$port...")
-        Thread({
-            runCatching { fetchIrohTicket(host, port) }
+        bootstrapTask = bootstrapExecutor.submit {
+            runCatching { fetchIrohTicket(host, port, onSocket = { socket ->
+                bootstrapSocket.set(socket)
+                if (Thread.currentThread().isInterrupted) socket.close()
+            }) }
                 .onSuccess { ticket ->
                     runOnUiThread {
-                        irohBootstrapInProgress = false
+                        if (generation != bootstrapGeneration || isFinishing || isDestroyed) return@runOnUiThread
                         irohTicketInput.setText(ticket)
                         modeSpinner.setSelection(modeIndex(ControllerBridgeService.MODE_UHID_RAW_IROH))
                         startBridge(host, port, transport, ControllerBridgeService.MODE_UHID_RAW_IROH, ticket)
@@ -276,11 +330,24 @@ class MainActivity : Activity() {
                 }
                 .onFailure { error ->
                     runOnUiThread {
-                        irohBootstrapInProgress = false
+                        if (generation != bootstrapGeneration || isFinishing || isDestroyed) return@runOnUiThread
                         appendStatus("Could not fetch Iroh ticket: ${error.message ?: error::class.java.simpleName}")
                     }
                 }
-        }, "iroh-ticket-bootstrap").start()
+        }
+    }
+
+    private fun cancelBootstrap() {
+        bootstrapGeneration += 1
+        bootstrapTask?.cancel(true)
+        bootstrapTask = null
+        runCatching { bootstrapSocket.getAndSet(null)?.close() }
+    }
+
+    override fun onDestroy() {
+        cancelBootstrap()
+        bootstrapExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     // API 26-32 do not support RECEIVER_NOT_EXPORTED. The API 33 branch sets it.
@@ -296,6 +363,9 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        cancelBootstrap()
+        startConfirmation?.dismiss()
+        startConfirmation = null
         unregisterReceiver(statusReceiver)
         super.onStop()
     }
@@ -390,14 +460,6 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private fun sanitizeHost(raw: String): String = raw
-        .trim()
-        .removePrefix("https://")
-        .removePrefix("http://")
-        .trimStart('/')
-        .substringBefore('/')
-        .substringBefore(':')
-
     private fun maybeRequestShizukuPermission(mode: String): Boolean {
         if (mode != ControllerBridgeService.MODE_LOCAL_UINPUT_XBOX360) return true
         return runCatching {
@@ -431,7 +493,10 @@ class MainActivity : Activity() {
                 }
             }
         }
-        if (permissions.isNotEmpty()) requestPermissions(permissions.toTypedArray(), 100)
+        val legacyScanPermission = Build.VERSION.SDK_INT <= 30 &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        val requested = if (legacyScanPermission) permissions + listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION) else permissions
+        if (requested.isNotEmpty()) requestPermissions(requested.toTypedArray(), 100)
     }
 
     // Both helpers are called only after appendBluetoothStatus checks CONNECT.

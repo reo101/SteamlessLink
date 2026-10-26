@@ -20,7 +20,7 @@ val irohJniLibsDir = providers.gradleProperty("steamless.irohJniLibs")
     .orElse(providers.environmentVariable("STEAMLESS_IROH_JNI_LIBS"))
     .orElse(providers.environmentVariable("IROH_JNI").map { "$it/jniLibs" })
 val zigSources = fileTree(rootProject.file("native/src")) { include("**/*.zig") }
-val zigCoreSources = fileTree(rootProject.file("core/src")) { include("**/*.zig") }
+val zigCoreSources = fileTree(rootProject.file("core/src")) { include("**/*.zig", "**/*.tsv") }
 val zigBuildFiles = rootProject.files("native/build.zig", "native/build.zig.zon", "core/build.zig", "core/build.zig.zon")
 val androidTargets = listOf("arm64-v8a" to "aarch64-linux-android", "x86_64" to "x86_64-linux-android")
 
@@ -31,8 +31,8 @@ android {
         applicationId = "xyz.reo101.steamlesslink"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("steamless.versionCode").map(String::toInt).getOrElse(1)
+        versionName = providers.gradleProperty("steamless.versionName").getOrElse("0.1.0")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Public test key. Never use it for a release or trust it as an identity.
@@ -52,6 +52,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    sourceSets["test"].resources.srcDir(rootProject.file("core/src/testdata"))
     irohJniLibsDir.orNull?.let { sourceSets["main"].jniLibs.srcDir(file(it)) }
     packaging {
         jniLibs.keepDebugSymbols += listOf("**/libsteamless_protocol.so", "**/libiroh_ffi.so")

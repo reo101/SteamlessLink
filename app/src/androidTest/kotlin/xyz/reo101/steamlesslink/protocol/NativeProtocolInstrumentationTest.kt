@@ -104,8 +104,8 @@ class NativeProtocolInstrumentationTest {
                 0x01, // report ID
                 0x01, 0x00, // BTN_SOUTH
                 0x08, // neutral hat switch
-                0x80.toByte(), 0x80.toByte(), // left stick
-                0x80.toByte(), 0x80.toByte(), // right stick
+                0x80.toByte(), 0x7f, // left stick, positive-down Y
+                0x80.toByte(), 0x7f, // right stick, positive-down Y
                 0x00, 0xff.toByte(), // triggers
             ),
             packet,

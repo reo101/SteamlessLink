@@ -213,19 +213,18 @@ class BleTritonTransport(
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            val pending = pendingWrite.getAndSet(null)
-            pending?.complete(status)
-            if (pending == null && status != BluetoothGatt.GATT_SUCCESS) {
-                onStatus("Unexpected BLE write callback failure uuid=${characteristic.uuid} status=$status")
+            if (lifecycle.isClosed) return
+            pendingWrite.get()?.let { pending ->
+                if (pending.complete(characteristic.uuid, status)) pendingWrite.compareAndSet(pending, null)
             }
         }
 
         @Deprecated("Deprecated by Android 13 but still called on older devices")
         override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            if (characteristic.uuid == REPORT_CHARACTERISTIC) {
-                @Suppress("DEPRECATION")
-                pendingRead.getAndSet(null)?.complete(status, characteristic.value ?: ByteArray(0))
-            }
+            if (lifecycle.isClosed) return
+            if (characteristic.uuid != REPORT_CHARACTERISTIC) return
+            @Suppress("DEPRECATION")
+            completeRead(characteristic.uuid, status, characteristic.value ?: ByteArray(0))
         }
 
         override fun onCharacteristicRead(
@@ -234,9 +233,9 @@ class BleTritonTransport(
             value: ByteArray,
             status: Int,
         ) {
-            if (characteristic.uuid == REPORT_CHARACTERISTIC) {
-                pendingRead.getAndSet(null)?.complete(status, value)
-            }
+            if (lifecycle.isClosed) return
+            if (characteristic.uuid != REPORT_CHARACTERISTIC) return
+            completeRead(characteristic.uuid, status, value)
         }
 
         @Deprecated("Deprecated by Android 13 but still called on older devices")
@@ -250,6 +249,25 @@ class BleTritonTransport(
             value: ByteArray,
         ) {
             handleNotification(characteristic.uuid, value)
+        }
+    }
+
+    private fun completeRead(uuid: UUID, status: Int, value: ByteArray) {
+        pendingRead.get()?.let { pending ->
+            if (pending.complete(uuid, status, value)) pendingRead.compareAndSet(pending, null)
+        }
+    }
+
+    internal fun awaitWrite(pending: PendingWrite, timeoutMs: Long): Int {
+        return pending.await(timeoutMs) ?: run {
+            failCapture("BLE write timed out; stopping capture before another GATT operation")
+            BluetoothGatt.GATT_FAILURE
+        }
+    }
+
+    internal fun awaitRead(pending: PendingRead, timeoutMs: Long): PendingReadResult? {
+        return pending.awaitResult(timeoutMs).also {
+            if (it == null) failCapture("BLE read timed out; stopping capture before another GATT operation")
         }
     }
 
@@ -466,7 +484,7 @@ class BleTritonTransport(
         var lastStatus = BluetoothGatt.GATT_FAILURE
         while (System.currentTimeMillis() < deadline) {
             val gatt = gatt ?: return@synchronized false
-            val pending = PendingWrite()
+            val pending = PendingWrite(characteristic.uuid)
             pendingWrite.set(pending)
             characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             val queued = if (Build.VERSION.SDK_INT >= 33) {
@@ -483,8 +501,9 @@ class BleTritonTransport(
                 sleepBeforeRetry(deadline)
                 continue
             }
-            lastStatus = pending.await((deadline - System.currentTimeMillis()).coerceAtLeast(1))
+            lastStatus = awaitWrite(pending, (deadline - System.currentTimeMillis()).coerceAtLeast(1))
             pendingWrite.compareAndSet(pending, null)
+            if (lifecycle.isClosed) return@synchronized false
             if (lastStatus == BluetoothGatt.GATT_SUCCESS) return@synchronized true
             attempts += 1
             sleepBeforeRetry(deadline)
@@ -500,7 +519,7 @@ class BleTritonTransport(
         var lastStatus = BluetoothGatt.GATT_FAILURE
         while (System.currentTimeMillis() < deadline) {
             val gatt = gatt ?: return@synchronized null
-            val pending = PendingRead()
+            val pending = PendingRead(characteristic.uuid)
             pendingRead.set(pending)
             if (!gatt.readCharacteristic(characteristic)) {
                 pendingRead.compareAndSet(pending, null)
@@ -508,8 +527,9 @@ class BleTritonTransport(
                 sleepBeforeRetry(deadline)
                 continue
             }
-            val result = pending.awaitResult((deadline - System.currentTimeMillis()).coerceAtLeast(1))
+            val result = awaitRead(pending, (deadline - System.currentTimeMillis()).coerceAtLeast(1))
             pendingRead.compareAndSet(pending, null)
+            if (result == null || lifecycle.isClosed) return@synchronized null
             lastStatus = result.status
             if (result.status == BluetoothGatt.GATT_SUCCESS) return@synchronized result.value
             attempts += 1
@@ -527,8 +547,8 @@ class BleTritonTransport(
     override fun close() {
         if (!outputClosed.compareAndSet(false, true)) return
         lifecycle.close()
-        pendingWrite.getAndSet(null)?.complete(BluetoothGatt.GATT_FAILURE)
-        pendingRead.getAndSet(null)?.complete(BluetoothGatt.GATT_FAILURE, ByteArray(0))
+        pendingWrite.getAndSet(null)?.let { it.complete(it.expectsUuid, BluetoothGatt.GATT_FAILURE) }
+        pendingRead.getAndSet(null)?.let { it.complete(it.expectsUuid, BluetoothGatt.GATT_FAILURE, ByteArray(0)) }
         synchronized(outputQueueLock) {
             queuedOutputReports.clear()
             outputQueueLock.notifyAll()
@@ -574,39 +594,47 @@ class BleTritonTransport(
     }
 }
 
-private class PendingWrite {
+internal class PendingWrite(val expectsUuid: UUID) {
     private val latch = CountDownLatch(1)
+    private val completed = AtomicBoolean(false)
     @Volatile private var status: Int = BluetoothGatt.GATT_FAILURE
 
-    fun complete(status: Int) {
+    fun complete(uuid: UUID, status: Int): Boolean {
+        if (uuid != expectsUuid || !completed.compareAndSet(false, true)) return false
         this.status = status
         latch.countDown()
+        return true
     }
 
-    fun await(timeoutMs: Long): Int =
-        if (latch.await(timeoutMs, TimeUnit.MILLISECONDS)) status else BluetoothGatt.GATT_FAILURE
+    fun await(timeoutMs: Long): Int? {
+        if (latch.await(timeoutMs, TimeUnit.MILLISECONDS)) return status
+        completed.set(true)
+        return null
+    }
 }
 
-private class PendingRead {
+internal class PendingRead(val expectsUuid: UUID) {
     private val latch = CountDownLatch(1)
+    private val completed = AtomicBoolean(false)
     @Volatile private var status: Int = BluetoothGatt.GATT_FAILURE
     @Volatile private var value: ByteArray = ByteArray(0)
 
-    fun complete(status: Int, value: ByteArray) {
+    fun complete(uuid: UUID, status: Int, value: ByteArray): Boolean {
+        if (uuid != expectsUuid || !completed.compareAndSet(false, true)) return false
         this.status = status
         this.value = value.copyOf()
         latch.countDown()
+        return true
     }
 
-    fun awaitResult(timeoutMs: Long): PendingReadResult =
-        if (latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-            PendingReadResult(status, value)
-        } else {
-            PendingReadResult(BluetoothGatt.GATT_FAILURE, ByteArray(0))
-        }
+    fun awaitResult(timeoutMs: Long): PendingReadResult? {
+        if (latch.await(timeoutMs, TimeUnit.MILLISECONDS)) return PendingReadResult(status, value)
+        completed.set(true)
+        return null
+    }
 }
 
-private data class PendingReadResult(val status: Int, val value: ByteArray)
+internal data class PendingReadResult(val status: Int, val value: ByteArray)
 
 internal fun numberBleReport(reportId: Int, payload: ByteArray): ByteArray =
     ByteArray(payload.size + 1).also { report ->
