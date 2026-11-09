@@ -49,7 +49,7 @@ full matrix. See [validation and measurements](docs/VALIDATION.md) and the
 [release procedure](docs/RELEASE.md). Physical USB and privileged Android tests remain opt-in.
 `devShells.build` omits language servers and developer diagnostics. The default
 shell extends it with those tools; both share the SDK, Zig, Gradle, and JNI configuration.
-The flake uses Zig 0.17.0 for Android and Linux builds, with ZLS 0.17.0 in the
+The flake uses Zig 0.17.1 for Android and Linux builds, with ZLS 0.17.0 in the
 default shell. The Iroh proxy uses Rust Iroh 1.4.1. Android uses Kotlin/FFI
 1.2.0, whose native dependency is also Iroh 1.4.1. The Android initializer is
 vendored from that release. Nix builds the Iroh JNI library for both Android
@@ -80,6 +80,18 @@ change, run the Nix-provided updater from the repository root:
 
 ```sh
 $(nix build --no-link --print-out-paths .#android-apk.mitmCache.updateScript)
+```
+
+The updater also records Maven repository index files. Those indexes change
+when upstream publishes unrelated artifacts, so the build rejects them. After
+each update, remove them from `nix/gradle-dependencies.json`:
+
+```sh
+jq 'del(."https://maven.google.com"."master-index",
+           ."https://maven.google.com"."androidx/test/group-index",
+           ."https://dl.google.com"."play-sdk/index/snapshot")' \
+  nix/gradle-dependencies.json > nix/gradle-dependencies.json.tmp
+mv nix/gradle-dependencies.json.tmp nix/gradle-dependencies.json
 ```
 
 If the Zig dependency manifests change, update the fixed-output hash in

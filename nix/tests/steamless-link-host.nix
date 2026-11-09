@@ -1,6 +1,7 @@
 {
   pkgs,
   lib,
+  zig,
   steamlessLinkHostModule,
   steamlessLinkHostPackage,
 }:
@@ -341,7 +342,7 @@ let
   extendedFixture =
     pkgs.runCommand "extended-gamepad-fixture.json"
       {
-        nativeBuildInputs = [ pkgs.zig_0_17 ];
+        nativeBuildInputs = [ zig ];
       }
       ''
         export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache

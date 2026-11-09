@@ -86,7 +86,11 @@ class BridgeLifecycleInstrumentationTest {
                 assertTrue("Starting a successor must not wait for network shutdown", System.nanoTime() - before < 2_000_000_000)
                 assertEquals(-1, input.read())
                 val deadline = System.nanoTime() + 5_000_000_000
-                while (ControllerTestFeed.latest == null && System.nanoTime() < deadline) Thread.sleep(20)
+                // The successor starts asynchronously. Wait for its own feed generation
+                // so a sample from the replaced session cannot satisfy the wait.
+                while (System.nanoTime() < deadline &&
+                    (ControllerTestFeed.latest == null ||
+                        !ControllerTestFeed.session.endsWith(ControllerBridgeService.MODE_CAPTURE_TEST))) Thread.sleep(20)
                 assertEquals("Capture only; previews are NOT sent", ControllerTestFeed.latest?.disposition)
                 assertTrue(ControllerTestFeed.session.contains(ControllerBridgeService.MODE_CAPTURE_TEST))
             }

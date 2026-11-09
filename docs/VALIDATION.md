@@ -79,9 +79,12 @@ A kernel test proves Linux input plumbing, not Steam application behavior. The A
 
 ## Recorded hardening validation
 
-The verified debug APK has SHA-256
+The hardening run verified a debug APK with SHA-256
 `09a8d824cfdfa66744942d639836faf25512acfd2877420d8fd4a0462f63b8f4`.
-Its `build-info.txt` identifies source `/nix/store/2yywzhqy6lj4rwcd2gmwwzfrcgmvnslb-source`.
+Its `build-info.txt` identified source
+`/nix/store/2yywzhqy6lj4rwcd2gmwwzfrcgmvnslb-source`. That artifact predates the
+Zig 0.17.1 upgrade. The 0.17.1 packages and APK build and pass their sandboxed
+checks, but the physical tests below were not repeated on the new artifact.
 
 - JVM: 38 tests, zero failures. Core: 28 tests. Host: 7. Linux client: 5. JNI adapter: 7. Rust proxy: 8.
 - Nix APK/package checks, all three Linux kernel tests, and the authorized Iroh round-trip check passed.
@@ -94,3 +97,24 @@ Its `build-info.txt` identifies source `/nix/store/2yywzhqy6lj4rwcd2gmwwzfrcgmvn
 USB hardware acceptance is blocked by a user-reported phone kernel panic when USB devices attach. No USB test was attempted. Live Steam receipt, screen-off behavior, and physical Wi-Fi handover remain unverified.
 
 An initial phone startup failure came from `/dev/null` being a regular file with the wrong SELinux label. Android's zygote aborted before app startup. A user-performed reboot restored the `1:3` character device and normal launch. No app change or SELinux relaxation was used for that problem.
+
+## Toolchain and CI
+
+The flake pins Zig 0.17.1 for Android and Linux builds. Zig packages from
+`zig-flake` are static musl builds. The Linux host therefore names the glibc
+target and the NixOS loader explicitly; otherwise Zig links a native binary
+against musl and it cannot start.
+
+The Gradle dependency manifest omits Maven repository index files
+(`master-index`, `androidx/test/group-index`, `play-sdk/index/snapshot`).
+Upstream changes those indexes without a dependency change, so their pinned
+hashes broke unrelated builds. Gradle does not need them. The build rejects a
+manifest that contains them and names the entries to remove.
+
+CI pins `ubuntu-24.04` and uses Node 24 action releases. The change filter runs
+only for push and pull-request events, and scheduled or manual runs select the
+full matrix explicitly.
+
+The Zig 0.17.1 rebuild passed the Android unit and lint checks, the sandbox APK
+build, the three Linux kernel tests, and the raw, generic, extended and Iroh
+emulator profiles.

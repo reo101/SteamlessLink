@@ -2,7 +2,7 @@
     .name = .steamless_protocol,
     .version = "0.1.0",
     .fingerprint = 0x8ebcc165171688ae,
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .steamless_core = .{
             .path = "../core",

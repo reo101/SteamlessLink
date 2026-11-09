@@ -19,14 +19,15 @@ permissions:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
-      android: ${{ steps.paths.outputs.android }}
-      kernel: ${{ steps.paths.outputs.kernel }}
+      android: ${{ steps.paths.outputs.android || steps.defaults.outputs.android }}
+      kernel: ${{ steps.paths.outputs.kernel || steps.defaults.outputs.kernel }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: paths
+      - uses: actions/checkout@v7
+      - id: paths
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             android:
@@ -54,13 +55,18 @@ jobs:
               - 'outputs.nix'
               - 'flake.lock'
               - '.github/workflows/**'
+      - id: defaults
+        if: github.event_name != 'push' && github.event_name != 'pull_request'
+        run: |
+          echo "android=true" >> "$GITHUB_OUTPUT"
+          echo "kernel=true" >> "$GITHUB_OUTPUT"
 
   android:
     needs: changes
     name: Android APK, lint, JVM and Zig tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
@@ -88,9 +94,9 @@ jobs:
 
   linux:
     name: Linux packages and Iroh round trip
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
@@ -102,12 +108,12 @@ jobs:
     needs: changes
     name: Linux UHID, controller capture and uinput tests
     if: github.event_name == 'schedule' || inputs.integration == true || needs.changes.outputs.kernel == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Enable KVM on the disposable runner
         run: sudo chmod 666 /dev/kvm
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v31.11.3
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes pipe-operators

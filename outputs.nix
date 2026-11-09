@@ -191,23 +191,22 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
 
         androidSdk = androidComposition.androidsdk;
         androidEmulatorSdk = androidEmulatorComposition.androidsdk;
-        zig = inputs'.zig-flake.packages.zig_0_17_0;
-        serverZig = pkgs.zig_0_17;
+        zig = inputs'.zig-flake.packages.zig_0_17_1;
         craneLib = inputs.crane.mkLib pkgs;
         androidArm64CraneLib = inputs.crane.mkLib androidPkgs.pkgsCross.aarch64-android-prebuilt;
         androidX86_64CraneLib = inputs.crane.mkLib androidX86_64Pkgs;
       in
       {
-        packages.native-dependencies = pkgs.callPackage ./nix/native-dependencies.nix { zig = serverZig; };
+        packages.native-dependencies = pkgs.callPackage ./nix/native-dependencies.nix { inherit zig; };
         packages.android-apk = pkgs.callPackage ./nix/android-apk.nix {
-          zig = serverZig;
+          inherit zig;
           inherit androidSdk;
           irohJni = self'.packages.iroh-android-jni;
           nativeDependencies = self'.packages.native-dependencies;
         };
-        packages.steamless-link-host = pkgs.callPackage ./server/package.nix { zig = serverZig; };
-        packages.steamless-link-controller = pkgs.callPackage ./client/package.nix { zig = serverZig; };
-        packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { zig = serverZig; };
+        packages.steamless-link-host = pkgs.callPackage ./server/package.nix { inherit zig; };
+        packages.steamless-link-controller = pkgs.callPackage ./client/package.nix { inherit zig; };
+        packages.steamless-uinput-gamepad = pkgs.callPackage ./nix/uinput-gamepad.nix { inherit zig; };
         packages.iroh-android-jni = pkgs.callPackage ./nix/iroh-android-jni.nix {
           craneLibArm64 = androidArm64CraneLib;
           craneLibX86_64 = androidX86_64CraneLib;
@@ -284,7 +283,7 @@ inputs.flake-parts.lib.mkFlake { inherit inputs; } (
               '';
           steamless-link-host-nixos = pkgs.testers.runNixOSTest (
             import ./nix/tests/steamless-link-host.nix {
-              inherit pkgs lib;
+              inherit pkgs lib zig;
               steamlessLinkHostModule = config.flake.nixosModules.steamless-link-host;
               steamlessLinkHostPackage = self'.packages.steamless-link-host;
             }

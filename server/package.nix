@@ -1,9 +1,25 @@
 {
   lib,
+  pkgs,
   stdenv,
   zig,
 }:
-
+let
+  # Upstream Zig links a native Linux program against musl. Build for the
+  # host's glibc and set the NixOS loader so the daemon and its tests run.
+  zigFlags = [
+    "-Dtarget=${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu"
+    "-Ddynamic-linker=${pkgs.glibc}/lib/${
+      {
+        x86_64 = "ld-linux-x86-64.so.2";
+        aarch64 = "ld-linux-aarch64.so.1";
+        i686 = "ld-linux.so.2";
+        armv7l = "ld-linux-armhf.so.3";
+      }
+      .${stdenv.hostPlatform.parsed.cpu.name}
+    }"
+  ];
+in
 stdenv.mkDerivation (finalAttrs: {
   pname = "steamless-link-host";
   version = "0.1.0";
@@ -32,7 +48,8 @@ stdenv.mkDerivation (finalAttrs: {
     zig build \
       --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
       -Doptimize=ReleaseSafe \
-      -Dcpu=baseline
+      -Dcpu=baseline \
+      ${lib.escapeShellArgs zigFlags}
 
     runHook postBuild
   '';
@@ -45,7 +62,8 @@ stdenv.mkDerivation (finalAttrs: {
     zig build test \
       --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
       -Doptimize=ReleaseSafe \
-      -Dcpu=baseline
+      -Dcpu=baseline \
+      ${lib.escapeShellArgs zigFlags}
 
     runHook postCheck
   '';

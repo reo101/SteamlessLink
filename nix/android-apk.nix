@@ -8,6 +8,33 @@
   irohJni,
   nativeDependencies,
 }:
+let
+  # Maven repository index files change when upstream publishes unrelated
+  # artifacts, so pinning their hashes fails unrelated builds. Gradle does not
+  # need them. The dependency updater writes them back; reject them here with a
+  # clear message instead of a later hash mismatch.
+  repositoryIndexPaths = [
+    [
+      "https://maven.google.com"
+      "master-index"
+    ]
+    [
+      "https://maven.google.com"
+      "androidx/test/group-index"
+    ]
+    [
+      "https://dl.google.com"
+      "play-sdk/index/snapshot"
+    ]
+  ];
+  presentRepositoryIndexes = builtins.filter (
+    path: lib.hasAttrByPath path (lib.importJSON ./gradle-dependencies.json)
+  ) repositoryIndexPaths;
+in
+assert lib.assertMsg (presentRepositoryIndexes == [ ]) ''
+  Remove mutable Maven index entries from nix/gradle-dependencies.json after
+  running the dependency updater: master-index, androidx/test/group-index, and
+  play-sdk/index/snapshot. Gradle does not need them.'';
 stdenv.mkDerivation (finalAttrs: {
   pname = "steamlesslink-android-apk";
   version = "0.1.0";
